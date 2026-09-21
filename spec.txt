@@ -1,0 +1,292 @@
+Create a new standalone ComfyUI custom node that extracts only the useful camera-trajectory / geometry-warp functionality from `Meridian_CameraH3_INT8_build_by_BruxosdoVFX`.
+
+The new node must be generic. It must not reference H3, MiniMax, Meridian, or any specific video model in its naming or behavior.
+
+## Purpose
+
+Given:
+
+* one image or a batch of video frames
+* matching MoGe geometry
+* a user-authored camera trajectory
+
+generate a sequence of reprojected RGB frames showing the source scene from the specified virtual camera positions.
+
+The output is simply an IMAGE batch and can be used as a reference/control video by any downstream workflow.
+
+## Node UI
+
+Retain the existing interactive 3D camera editor concept from Camera H3.
+
+The UI should include:
+
+* 3D scene/camera viewport
+* timeline
+* camera keyframes placed on the timeline
+* draggable/editable virtual camera
+* visible camera trajectory/path
+* point-cloud visualization after the node has executed at least once
+
+The existing Camera H3 behavior where the point map becomes visible in the 3D camera editor after execution is particularly useful and should be retained.
+
+The node itself owns and edits the camera trajectory. Camera poses are not normally supplied frame-by-frame from another node.
+
+## Inputs
+
+### `source`
+
+Type: `IMAGE`
+
+Accept either:
+
+* one image
+* multiple frames / video batch
+
+This supplies RGB appearance for the reconstructed point cloud.
+
+### `moge_geometry`
+
+Use the native ComfyUI MoGe geometry output.
+
+This is the only supported geometry/depth source initially.
+
+Do not add generic depth-map support unless necessary for architectural reasons. MoGe already provides better geometry/intrinsics and avoids unnecessary depth scaling controls.
+
+### `frame_count`
+
+Type: `INT`
+
+User-editable widget and connectable ComfyUI input.
+
+This is the number of output frames.
+
+There are no predefined duration presets.
+
+The node does not expose FPS. The intended timeline rate is always 24 fps.
+
+### `camera_path`
+
+Optional input.
+
+A JSON/string representation of the camera keyframes.
+
+If connected/provided:
+
+* load those keyframes into the visual editor
+* display them on the timeline
+* allow the user to continue editing them
+
+If absent:
+
+* use the trajectory currently authored in the node UI
+
+This enables separate preset/path nodes later.
+
+## Camera keyframe format
+
+Each keyframe should contain:
+
+```json
+{
+  "frame": 0,
+  "azimuth": 0.0,
+  "elevation": 0.0,
+  "distance": 1.0,
+  "lateral": 0.0,
+  "height": 0.0
+}
+```
+
+A complete path is an ordered JSON array.
+
+Example:
+
+```json
+[
+  {
+    "frame": 0,
+    "azimuth": 0,
+    "elevation": 0,
+    "distance": 1,
+    "lateral": 0,
+    "height": 0
+  },
+  {
+    "frame": 30,
+    "azimuth": 20,
+    "elevation": 5,
+    "distance": 1.1,
+    "lateral": 0,
+    "height": 0
+  },
+  {
+    "frame": 60,
+    "azimuth": 45,
+    "elevation": 0,
+    "distance": 1.2,
+    "lateral": 0.1,
+    "height": 0
+  }
+]
+```
+
+Use frame indices rather than seconds.
+
+## Camera controls
+
+Each camera keyframe has the same properties:
+
+* `azimuth`
+* `elevation`
+* `distance`
+* `lateral`
+* `height`
+
+Use MoGe camera intrinsics automatically where available.
+
+Do not expose FOV controls unless required as a fallback when valid intrinsics are unavailable.
+
+The orbit pivot/target should be automatically determined from the geometry by default.
+
+If the existing Camera H3 UI already has a useful way to manually choose or reposition the pivot, retaining that capability is acceptable, but it should not complicate normal use.
+
+## Keyframe interpolation
+
+The visual camera editor should interpolate camera transforms between authored keyframes so that a sparse timeline can describe a continuous camera path.
+
+This interpolation is only for the camera trajectory itself.
+
+Do not interpolate source video frames or geometry frames.
+
+Users can perform video frame interpolation elsewhere in ComfyUI if desired.
+
+## Source-frame behavior
+
+For output frame `i`:
+
+* if source frame `i` exists, use source frame `i` and its corresponding MoGe geometry
+* otherwise reuse the final available source frame and final available geometry frame
+
+Therefore:
+
+```text
+1 source image + 120 output frames
+```
+
+means the same source geometry is viewed from 120 virtual camera positions.
+
+And:
+
+```text
+60 source frames + 120 output frames
+```
+
+means frames 0–59 use their corresponding source/geometry frames, while frames 60–119 continue using source/geometry frame 59.
+
+Do not perform temporal interpolation of the input batch.
+
+## Rendering
+
+Use the source RGB plus MoGe geometry to construct/reproject the scene from the virtual camera.
+
+Reuse/adapt the relevant point-cloud and camera math from the existing repository where appropriate.
+
+The output frame dimensions must match the input source dimensions.
+
+Do not force Meridian-specific resolutions, 480-class canvases, crops, frame-count grids, or gray-hole conventions.
+
+Unknown/unseen regions may use a sensible neutral fill internally, but the implementation must remain generic and not encode Meridian-specific assumptions.
+
+## Outputs
+
+### `camera_video`
+
+Type: `IMAGE`
+
+The rendered camera-trajectory video.
+
+Shape:
+
+```text
+[frame_count, input_height, input_width, channels]
+```
+
+### `camera_path`
+
+Type: `STRING`
+
+JSON representing the current camera keyframes.
+
+This output must be directly compatible with the optional `camera_path` input so paths can be saved, routed, reused, or generated by future preset nodes.
+
+### `warp_mask`
+
+Type: `MASK`
+
+Optional but useful.
+
+Identify pixels that could not be reconstructed from source geometry because they became newly visible from the transformed camera.
+
+This is primarily useful for:
+
+* debugging
+* visualization
+* downstream compositing/control
+
+Keep it if it comes naturally from the renderer, but it should not affect normal node usage.
+
+## Preview caching / interactivity
+
+After the node executes once:
+
+* retain enough point-cloud/geometry data for the frontend 3D preview
+* show the point cloud in the camera editor
+* allow camera-path editing and previewing without recomputing MoGe
+
+Reuse the existing repository's preview/cache architecture where useful.
+
+Changes that affect actual geometry should require execution again; camera-position changes should update the visual preview immediately where practical.
+
+## Explicitly remove / do not port
+
+Do not include:
+
+* H3 prompt generation
+* MiniMax-specific conditioning
+* Meridian reference construction
+* fixed text embeddings
+* LoRA handling
+* H3 frame-count restrictions
+* Meridian supported-length restrictions
+* 5/10/15-second profiles
+* source FPS controls
+* output FPS controls
+* generic relative-depth controls
+* depth ratio
+* depth inversion
+* depth smoothing
+* Meridian-specific output resolutions
+* Meridian gray-128 requirements
+* model-specific sampler settings
+* workflow-specific convenience outputs
+* duplicate informational/debug outputs unless genuinely useful
+
+## Design principle
+
+This should feel like a normal reusable ComfyUI utility:
+
+```text
+Source IMAGE
+      +
+MoGe Geometry
+      +
+Camera editor / optional saved path
+      +
+Frame Count
+      ↓
+Generic Camera Trajectory Video
+```
+
+A user should be able to drop this node into an existing image/video-generation workflow without adopting any other workflow structure from the original Camera H3 package.
+
+Use the existing Camera H3 implementation as a source for proven camera math, point-cloud rendering, cached preview data, and frontend interaction—not as an API or UX design to preserve.

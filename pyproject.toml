@@ -1,0 +1,15 @@
+[project]
+name = "comfyui-camera-path"
+description = "Reproject an image or clip through its MoGe geometry along a camera path authored in an interactive 3D editor."
+version = "1.0.0"
+requires-python = ">=3.10"
+dependencies = []
+keywords = ["camera", "moge", "geometry", "point cloud", "video", "reprojection", "parallax"]
+
+[project.urls]
+Repository = "https://github.com/phazei/ComfyUI-Camera-Path"
+
+[tool.comfy]
+PublisherId = "phazei"
+DisplayName = "Camera Path"
+includes = []
