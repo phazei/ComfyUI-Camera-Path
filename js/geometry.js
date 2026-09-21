@@ -494,6 +494,50 @@ function solveOrbit(u, v, pose) {
 }
 
 /**
+ * The pivot-relative pose that reproduces a camera basis, as closely as the axes allow.
+ *
+ * Used when a keyframe has to be attached to a single pivot but the camera it must
+ * reproduce was framed against another one. Orbit angles and distance place the eye,
+ * then pan/tilt/roll turn the basis the rest of the way, so the shot survives even
+ * though the numbers no longer resemble the ones it came from. Truck, boom, dolly and
+ * lock stay zero: the eye is already on the orbit sphere, and several combinations of
+ * them would give the same camera.
+ * @param {{eye: number[], right: number[], down: number[], forward: number[]}} target Basis to match.
+ * @param {{x: number, y: number, z: number, tilt?: number, roll?: number, heading?: number}} pivot Resolved pivot.
+ * @param {number} unit Automatic pivot depth.
+ * @param {object} [reference] Pose the solve starts from, for branch choice and unwrapping.
+ * @param {(name: string, value: number) => number} [limit] Clamps one axis to its UI range.
+ * @returns {object} Every camera axis.
+ */
+export function solvePose(target, pivot, unit, reference = { azimuth: 0, elevation: 0 }, limit = (name, value) => value) {
+  const centre = pivotWorld(pivot, unit);
+  const offset = [0, 1, 2].map((i) => target.eye[i] - centre[i]);
+  const radius = norm(offset);
+  const frame = orbitFrame(pivot.tilt || 0, pivot.roll || 0, pivot.heading || 0);
+  // On the pivot itself no direction is defined, so the orbit angles have to be kept.
+  const solved = radius < 1e-9
+    ? { azimuth: reference.azimuth || 0, elevation: reference.elevation || 0 }
+    : solveOrbit([0, 0, -1], mulVec(transpose(frame), scaled(offset, 1 / radius)), reference);
+  const pose = {
+    azimuth: limit('azimuth', solved.azimuth), elevation: limit('elevation', solved.elevation),
+    distance: limit('distance', radius / unit), lateral: 0, height: 0, dolly: 0, lock: 0,
+    pan: 0, tilt: 0, roll: 0,
+  };
+  // Whatever the clamped orbit could not reach is left for the aim to correct.
+  const base = orbitCamera(pose, centre, pivot.tilt || 0, pivot.roll || 0, unit, pivot.heading || 0);
+  const from = [base.right, base.down, base.forward], onto = [target.right, target.down, target.forward];
+  const turn = from.map((column) => onto.map((other) => dot(column, other)));
+  const tilt = Math.asin(Math.min(1, Math.max(-1, -turn[1][2])));
+  // rotY(pan) * rotX(tilt) * rotZ(roll); at tilt = +-90 pan and roll fold together.
+  const folded = Math.abs(Math.cos(tilt)) < 1e-6;
+  const pan = folded ? Math.atan2(-turn[2][0], turn[0][0]) : Math.atan2(turn[0][2], turn[2][2]);
+  const roll = folded ? 0 : Math.atan2(turn[1][0], turn[1][1]);
+  const degrees = 180 / Math.PI;
+  return { ...pose, pan: limit('pan', pan * degrees), tilt: limit('tilt', tilt * degrees),
+           roll: limit('roll', roll * degrees) };
+}
+
+/**
  * A scene-space offset as it appears on screen when the view is stood upright.
  * @param {number[]} delta Scene offset.
  * @param {number[][]|null} upright Upright rotation, or null.

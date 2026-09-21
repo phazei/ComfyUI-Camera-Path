@@ -14,7 +14,7 @@ way until he asks.
 python -m unittest discover -s tests -t .
 ``
 
-82 tests, including the editor smoke suite, pass. `test_editor.py` needs a local
+86 tests, including the editor smoke suite, pass. `test_editor.py` needs a local
 `npm install jsdom` and `test_node.py` needs `COMFYUI_PATH` set unless the repo sits in
 `custom_nodes/`; both skip themselves otherwise, so check the skip count before trusting
 a green run.
@@ -43,6 +43,39 @@ See "Scene furniture" below. The scene view's pan (shift/middle-drag), recentre
 (double-click) and zoom range have been used and approved.
 
 ## Controls, sizes and markers — tested and approved
+
+### New: two-pivot capture and selection fixes (awaiting visual testing)
+
+- Camera keys now carry explicit `pivot_target` and `pivot_blend` (0..1). The camera
+  panel exposes a destination dropdown and percentage slider. Missing targets are
+  inferred from the next distinct pivot; inserted keys capture the evaluated pair
+  and ratio while retaining the preceding primary pivot. No multi-pivot-weight UI.
+- Compatible handoffs share a scalar PCHIP blend across their keys; this avoids a
+  forced stop at every inserted camera. All pivot components follow that same ratio.
+  Incompatible endpoint blends use smoothstep between resolved pivots. Both runtimes
+  match, including pivot tilt, roll, heading and animated tracks.
+- Adding a key verifies the effective pivot can be represented before writing. A span
+  that needs three pivots (blend A/B into blend B/C — which is what he hit after deleting
+  the middle camera of three) is **fitted** rather than refused: attach to the previous
+  key's blend target and solve the orbit and aim from the camera on show
+  (`geometry.solvePose`). He asked for best effort over a block, since working around
+  the block means moving cameras, which changes the path anyway. Measured exact to
+  ~1e-15 on the test fixture; `approximate` in the notice means an axis limit clamped.
+  The fitted key reads oddly — large pan/roll, zero truck/boom/dolly — by design.
+- The status line now has a transient half (`setNotice`, 10s). The old insertion error
+  stayed up forever, which he reported. Keep parse errors sticky.
+- Existing multi-pivot motion can change with this interpolation model. Insertion
+  preserves the shot at the sampled frame within saved precision, not the surrounding
+  curve. Camera axes still use automatic PCHIP slopes. Visual smoothness needs feedback.
+- Deletion clears selection, holds time and the overview pivot frame, and hides the
+  camera controls until a camera is selected. Removing a defining key can still change
+  the rendered shot at the held time. Clicking the live ring between keys no longer
+  seeks to or edits an unrelated selected camera; at the selected key it remains a handle.
+- Reset key clears blend to 0%; changing primary pivot also clears blend and still
+  moves the shot. This is not a general preserve-world-pose pivot reassignment tool.
+- Tests cover repeated insertion with oriented pivots/aim/lock/dolly, UI blend editing,
+  mixed-span rejection, deletion without seek, live-ring clicks, persistence, validation,
+  blend smoothness and Python/JS pose and camera-matrix parity. No changes to editor sizing.
 
 The azimuth dial and the pan/tilt puck replaced those three sliders, after the maintainer
 used Camera H3, whose orbit dial he liked but whose sizing wrecked the node layout.

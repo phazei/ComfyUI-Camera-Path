@@ -8,15 +8,22 @@ const { window } = dom;
 
 // jsdom has no 2D canvas. A recording stub is enough to prove the drawing code runs.
 const calls = new Set();
+const topTicks = [];
 window.HTMLCanvasElement.prototype.getContext = function () {
-  let drawn;
+  let drawn, lineStart, lineEnd;
   const record = name => (...ignored) => { calls.add(name); };
   const data = (w, h) => ({ data: new window.Uint8ClampedArray(w * h * 4), width: w, height: h });
   return {
     canvas: this,
     setTransform: record('setTransform'), fillRect: record('fillRect'), clearRect: record('clearRect'),
-    beginPath: record('beginPath'), moveTo: record('moveTo'), lineTo: record('lineTo'),
-    stroke: record('stroke'), arc: record('arc'), fill: record('fill'), fillText: record('fillText'),
+    beginPath: record('beginPath'),
+    moveTo: (...point) => { lineStart = point; calls.add('moveTo'); },
+    lineTo: (...point) => { lineEnd = point; calls.add('lineTo'); },
+    stroke() {
+      calls.add('stroke');
+      if (this.strokeStyle === '#8c4cff' && this.lineWidth === 1.5) topTicks.push([lineStart, lineEnd]);
+    },
+    arc: record('arc'), fill: record('fill'), fillText: record('fillText'),
     drawImage: image => { drawn = image; calls.add('drawImage'); }, putImageData: record('putImageData'),
     createImageData: data, getImageData: (x, y, w, h) => {
       const image = data(w, h);
@@ -68,7 +75,7 @@ let confirmAnswer = true;
 globalThis.confirm = () => confirmAnswer;
 
 const { createCameraEditor, spreadMarkers } = await import(new URL('../js/editor.js', import.meta.url));
-const { cameraScenePosition, dragOrbit, dragTruck, uprightRotation, renderScene } = await import(new URL('../js/geometry.js', import.meta.url));
+const { cameraScenePosition, poseCamera, dragOrbit, dragTruck, uprightRotation, renderScene } = await import(new URL('../js/geometry.js', import.meta.url));
 
 // Scene splats grow without giving up clipping or depth occlusion.
 {
@@ -141,13 +148,26 @@ const dragScene = (from, to, init = {}) => {
 };
 
 check('builds the viewport, timeline and axis fields',
-      element.querySelectorAll('.fields[data-panel=camera] .field:not(.lock)').length === 8
+      element.querySelectorAll('.fields[data-panel=camera] .field:not(.lock)').length === 9
       && element.querySelectorAll('.fields[data-panel=pivot] .field').length === 6
       && element.querySelector('.fields[data-panel=pivot]').hidden
       && element.querySelector('.field.lock') !== null
       && element.querySelectorAll('.key').length === 2
       && element.querySelector('.scene') !== null);
 check('draws the scene', calls.has('arc') && calls.has('stroke'));
+{
+  const saved = stored;
+  editor.loadPath([{ frame: 0, roll: 0 }]);
+  const upright = topTicks.at(-1);
+  editor.loadPath([{ frame: 0, roll: 180 }]);
+  const inverted = topTicks.at(-1);
+  const centre = project([0, 0, 0]);
+  check('frustum top tick follows a 180-degree camera roll',
+        upright && inverted && Math.hypot(upright[1][0] - upright[0][0], upright[1][1] - upright[0][1]) > 1
+        && upright.every((point, end) => point.every((value, axis) =>
+          Math.abs(value + inverted[end][axis] - 2 * centre[axis]) < 1e-9)));
+  editor.loadPath(JSON.parse(saved));
+}
 check('delete keyframe lives beside reset key and reset aim is removed',
       element.querySelector('[data-action=remove]').parentElement
       === element.querySelector('[data-action=reset-key]').parentElement
@@ -251,6 +271,89 @@ check('truck dragging uses the pivot axes in the upright view',
 
 const track = element.querySelector('.track');
 const trackX = (fraction) => 30 + fraction * 400 * ZOOM;
+{
+  const saved = stored;
+  const fixture = {
+    pivots: [
+      { id: 'a', keys: [{ frame: 0, x: -0.4, z: 1.3, tilt: 12, roll: -5, heading: 25 }] },
+      { id: 'b', keys: [{ frame: 0, x: 0.8, y: 0.2, z: 2, tilt: -10, roll: 8, heading: 110 }] },
+      { id: 'c', keys: [{ frame: 0, x: -1, z: 1.8 }] },
+    ],
+    camera: [{ frame: 0, pivot: 'a', azimuth: 120, pan: 15, dolly: 0.2 },
+             { frame: 48, pivot: 'b', azimuth: 190, elevation: 12, lock: 1, height: 0.3 }],
+  };
+  editor.loadPath(fixture);
+  for (const frame of [24, 36, 12, 30]) {
+    pointer(track, 'pointerdown', trackX(frame / 48));
+    pointer(track, 'pointerup', trackX(frame / 48));
+    const before = poseCamera(poseAt(JSON.parse(stored), frame), 1);
+    click('add');
+    const inserted = path().find(key => key.frame === frame);
+    const after = poseCamera(poseAt(JSON.parse(stored), frame), 1);
+    check(`insertion at ${frame} inherits the explicit pivot pair`,
+          inserted?.pivot === 'a' && inserted.pivot_target === 'b' && inserted.pivot_blend > 0 && inserted.pivot_blend < 1);
+    check(`insertion at ${frame} preserves position and orientation`,
+          ['eye', 'right', 'down', 'forward'].every(name => before[name].every((value, i) => Math.abs(value - after[name][i]) < 0.001)));
+  }
+  const blendInput = [...element.querySelectorAll('.field')].find(field => field.textContent.startsWith('Pivot blend')).querySelector('input[type=number]');
+  blendInput.value = '25';
+  blendInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+  check('blend percentage is editable and stored as a fraction', path().find(key => key.frame === 30).pivot_blend === 0.25);
+  const target = element.querySelector('[data-role=pivot-target]');
+  target.value = 'c';
+  target.dispatchEvent(new window.Event('change', { bubbles: true }));
+  check('blend target is explicitly editable', path().find(key => key.frame === 30).pivot_target === 'c');
+  // A span mixing three pivots cannot be stored as a blend, so it is fitted instead.
+  pointer(track, 'pointerdown', trackX(27 / 48));
+  pointer(track, 'pointerup', trackX(27 / 48));
+  const mixed = poseCamera(poseAt(JSON.parse(stored), 27), 1);
+  const timers = [];
+  const realTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (callback, delay) => (delay === 10000 ? timers.push(callback) && 0 : realTimeout(callback, delay));
+  click('add');
+  const estimated = path().find(key => key.frame === 27);
+  const fitted = poseCamera(poseAt(JSON.parse(stored), 27), 1);
+  check('a mixed span still inserts, on the pivot the camera was heading for',
+        estimated?.pivot === 'b' && estimated.pivot_target === 'b' && estimated.pivot_blend === 0
+        && estimated.lateral === 0 && estimated.height === 0 && estimated.dolly === 0);
+  check('the fitted keyframe reproduces the shot it was inserted at',
+        ['eye', 'right', 'down', 'forward'].every(name =>
+          fitted[name].every((value, i) => Math.abs(value - mixed[name][i]) < 0.005)));
+  const notice = element.querySelector('.status');
+  check('the estimate is announced without claiming an error',
+        /^Added on pivot 2; pose (estimated|approximate)\.$/.test(notice.textContent)
+        && !notice.classList.contains('error'));
+  timers.pop()();
+  check('the notice clears itself instead of staying forever', notice.textContent === '');
+  globalThis.setTimeout = realTimeout;
+  pointer(track, 'pointerdown', trackX(40 / 48));
+  pointer(track, 'pointerup', trackX(40 / 48));
+  click('add');
+  check('an exact insertion says nothing', notice.textContent === '');
+
+  editor.loadPath([{ frame: 0, azimuth: -90 }, { frame: 48, azimuth: 90 }]);
+  click('view-reset');
+  pointer(element.querySelectorAll('.key')[1], 'pointerdown', trackX(1));
+  pointer(track, 'pointerup', trackX(1));
+  pointer(track, 'pointerdown', trackX(0.5));
+  pointer(track, 'pointerup', trackX(0.5));
+  const live = project(cameraScenePosition(poseAt(JSON.parse(stored), 24), 1));
+  const beforeRing = stored;
+  dragScene(live, [live[0] + 20, live[1] + 10]);
+  check('live ring does not seek to or modify the selected distant key',
+        element.querySelector('.cursor').style.left === '50%' && stored === beforeRing);
+  click('remove');
+  check('deleting the last key also clears selection without seeking',
+        path().length === 1 && !element.querySelector('.key.selected')
+        && element.querySelector('.cursor').style.left === '50%'
+        && element.querySelector('.fields[data-panel=camera]').hidden);
+  const afterDelete = stored;
+  element.querySelector('.viewport').dispatchEvent(new window.WheelEvent('wheel', {
+    bubbles: true, altKey: true, deltaY: 50,
+  }));
+  check('distance gesture cannot edit a camera after deletion cleared selection', stored === afterDelete);
+  editor.loadPath(JSON.parse(saved));
+}
 pointer(track, 'pointerdown', trackX(0.5));
 pointer(track, 'pointerup', trackX(0.5));
 check('scrubbing moves the playhead', element.querySelector('.cursor').style.left !== '0%');
@@ -259,8 +362,14 @@ click('add');
 check('add inserts a keyframe on the playhead', path().length === 3 && path().some(key => key.frame === 24));
 click('remove');
 check('remove drops it again', path().length === 2);
+check('deleting leaves the playhead in place and clears selection',
+      element.querySelector('.cursor').style.left === '50%'
+      && !element.querySelector('.key.selected')
+      && element.querySelector('[data-role=selection]').textContent === 'No camera selected');
+pointer(element.querySelector('.key'), 'pointerdown', trackX(0));
+pointer(track, 'pointerup', trackX(0));
 
-const slider = element.querySelector('.field input[type=range]');
+const slider = [...element.querySelectorAll('.field')].find(field => field.textContent.startsWith('Elevation')).querySelector('input[type=range]');
 slider.value = '35';
 slider.dispatchEvent(new window.Event('input', { bubbles: true }));
 check('a slider edits the selected keyframe', path().some(key => key.elevation === 35));

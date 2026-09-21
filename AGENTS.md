@@ -165,10 +165,27 @@ Version 2 is an object; a bare array of camera keyframes is version 1 and still 
   every keyframe below it. A keyframe without `pivot` orbits the first one.
 - A pivot's `keys` is a track. The editor writes exactly one key today, but the shape is the
   temporal pivot (a subject that moves) waiting to be data rather than a migration.
-- When consecutive keyframes name different pivots, each keyframe's pivot is **resolved to a
-  position and frame first** and those are interpolated (`trajectory.pose_at`), so a handoff
-  from one subject to another is a move, not a pop. The discrete reference is never
-  interpolated, only what it resolves to.
+- Camera keys also store `pivot_target` (a pivot id) and `pivot_blend` (0..1). The
+  effective pivot is the linear blend of the primary and target pivot components,
+  each resolved at that camera key's frame. Missing targets are inferred once from
+  the next distinct camera pivot, or the primary pivot if none follows; missing blend is 0.
+- Compatible contiguous runs involving the same two pivots interpolate one PCHIP blend
+  ratio, shared by all six pivot components. Unblended keys can join either adjacent
+  handoff. Spans involving more pivots ease between resolved endpoints with smoothstep.
+  Camera axes retain their independent PCHIP curves. This changes existing multi-pivot
+  paths' intermediate motion, not their authored unblended endpoint shots.
+- Insertion captures camera axes and `pivotBlendAt`'s two-pivot state, retaining the
+  preceding primary pivot. Before committing, it checks the effective pivot matches.
+  When it cannot — a span mixing three pivots, or an animated track — the keyframe is
+  **fitted** instead: `editor.estimatedKey` attaches it to the previous keyframe's blend
+  target (its primary pivot when it is not blending) and `geometry.solvePose` solves
+  azimuth/elevation/distance for the eye and pan/tilt/roll for the basis, with truck,
+  boom, dolly and lock zeroed because they are redundant there. It is exact to floating
+  point unless an axis limit clamps; the notice then says `approximate`. No stored
+  multi-pivot weights, no automatically created pivots, and insertion is never refused.
+- Insertion preserves the sampled shot within serialization precision, not the entire
+  surrounding curve: automatic slopes are recalculated. Explicit targets survive
+  neighbouring insertions/reordering and count as references when protecting pivot deletion.
 
 ### Camera model
 
@@ -307,6 +324,15 @@ drawn **and hit tested**; its `point` is where it really is. Consequences worth 
   outermost markers off the viewport.
 - The playhead ring is **not** spread: it marks where the live camera is, so it stays on the
   true position even when the keyframe disc for that frame has been nudged aside.
+  It only edits the selected key when the playhead is exactly at that key. Between keys
+  clicking it is informational, never a seek to the selected camera elsewhere.
+- `editor.setNotice` owns the transient half of the status line: `error || notice ||
+  status`, ten seconds, cleared by the next insertion and by `destroy`. Parse errors are
+  still sticky, because they describe the path rather than something that just happened.
+- Deleting a camera clears selection (`selected = -1`) and retains the playhead and
+  overview pivot frame. Camera controls stay hidden until a camera is selected again.
+  The held overview frame is released by explicit selection, timeline scrubbing, loading
+  a path, insertion or Reset view. The rendered shot can change when its defining key is removed.
 
 ### Preview cache
 

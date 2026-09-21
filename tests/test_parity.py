@@ -23,12 +23,15 @@ PATH = {
     "pivots": [
         {"id": "subject", "keys": [{"frame": 0, "x": -0.2, "y": 0.1, "z": 0.9, "tilt": -12, "roll": 4, "heading": 35}]},
         {"id": "other", "keys": [{"frame": 0, "x": 0.4, "heading": -20}, {"frame": 60, "x": 0.6, "z": 1.3, "roll": -9, "heading": 90}]},
+        {"id": "third", "keys": [{"frame": 0, "x": -0.6, "z": 1.7, "tilt": 20, "heading": -45}]},
     ],
     "camera": [
         {"frame": 0, "pivot": "subject", "azimuth": 0, "elevation": 0, "distance": 1, "lateral": 0, "height": 0},
-        {"frame": 17, "pivot": "subject", "azimuth": 20.5, "elevation": 5, "distance": 1.1, "lateral": -0.2,
+        {"frame": 17, "pivot": "subject", "pivot_target": "other", "pivot_blend": 0.35,
+         "azimuth": 20.5, "elevation": 5, "distance": 1.1, "lateral": -0.2,
          "height": 0.15, "pan": 4, "tilt": -6, "roll": 3, "lock": 0, "dolly": -0.4},
-        {"frame": 42, "pivot": "other", "azimuth": 45, "elevation": -3, "distance": 1.2, "lateral": 0.1, "height": 0,
+        {"frame": 42, "pivot": "other", "pivot_target": "third", "pivot_blend": 0.2,
+         "azimuth": 45, "elevation": -3, "distance": 1.2, "lateral": 0.1, "height": 0,
          "pan": 12, "tilt": -6, "roll": -11, "lock": 1, "dolly": 0.6},
         {"frame": 90, "pivot": "other", "azimuth": 45, "elevation": -3, "distance": 0.8, "lateral": 0.1,
          "height": -0.4, "pan": 12, "tilt": 9, "lock": 1},
@@ -82,7 +85,7 @@ def point_map(depth):
 class FrontendParity(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        frames = list(range(0, 95, 3))
+        frames = sorted(set(range(0, 95, 3)) | {-3, 16.999, 17, 17.001, 41.999, 42.001})
         depth, colors = scene()
         cls.renders = [{"width": WIDTH, "height": HEIGHT, "lens": LENS, "splat": splat, "pose": pose,
                         "pivot": pivot, **frame, "depth": depth.flatten().tolist(), "colors": colors.flatten().tolist()}

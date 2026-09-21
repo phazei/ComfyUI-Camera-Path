@@ -23,12 +23,11 @@ still loads, orbiting the automatic pivot.
 Every axis is optional and defaults to the pivot-relative reset pose, so a path
 written before an axis existed still loads.
 
-Interpolation between keyframes is monotone cubic (PCHIP) per axis, so a sparse
-timeline describes a continuous camera move and never overshoots a keyframe. When
-consecutive camera keys name different pivots, the pivots' resolved positions are
-interpolated the same way, so the camera hands off from one subject to the next
-instead of popping. js/interpolate.js is the same function, so the editor preview
-matches the render.
+Camera axes use monotone cubic (PCHIP) interpolation. A camera key also stores
+``pivot_target`` and ``pivot_blend`` (0..1), describing its effective orbit frame.
+Compatible two-pivot runs use one PCHIP blend ratio for all pivot components;
+incompatible runs use a smoothstep between the resolved endpoint pivots.
+js/interpolate.js mirrors this calculation so the editor matches the render.
 """
 import json
 import math
@@ -42,8 +41,6 @@ DEFAULTS = {"azimuth": 0.0, "elevation": 0.0, "distance": 1.0, "lateral": 0.0, "
 PIVOT_AXES = ("x", "y", "z", "tilt", "roll", "heading")
 #: The automatic pivot: on the optical axis, one pivot depth in, frame of the source camera.
 PIVOT_DEFAULTS = {"x": 0.0, "y": 0.0, "z": 1.0, "tilt": 0.0, "roll": 0.0, "heading": 0.0}
-#: Hidden axes the camera track carries so a pivot switch interpolates as a move.
-_CARRIED = tuple("_pivot_" + name for name in PIVOT_AXES)
 VERSION = 2
 
 Pose = dict
@@ -139,7 +136,8 @@ def parse_path(raw) -> Path:
         pivots.append({"id": identifier, "keys": keys})
 
     camera = []
-    for item, key in _keys(data.get("camera"), "keyframe", AXES, DEFAULTS):
+    entries = _keys(data.get("camera"), "keyframe", AXES, DEFAULTS)
+    for index, (item, key) in enumerate(entries):
         if key["distance"] <= 0.0:
             raise ValueError(f"keyframe {key['frame']}: distance must be greater than 0.")
         reference = item.get("pivot")
@@ -147,7 +145,18 @@ def parse_path(raw) -> Path:
             reference = pivots[0]["id"]
         elif not any(pivot["id"] == reference for pivot in pivots):
             raise ValueError(f'keyframe {key["frame"]}: no pivot with id "{reference}".')
-        camera.append({"frame": key["frame"], "pivot": reference, **{name: key[name] for name in AXES}})
+        target = item.get("pivot_target")
+        if target is None:
+            target = next((entry.get("pivot") or pivots[0]["id"] for entry, _ in entries[index + 1:]
+                           if (entry.get("pivot") or pivots[0]["id"]) != reference), reference)
+        blend = float(0 if item.get("pivot_blend") is None else item["pivot_blend"])
+        if not any(pivot["id"] == target for pivot in pivots):
+            raise ValueError(f'keyframe {key["frame"]}: missing blend target.')
+        if not math.isfinite(blend) or not 0 <= blend <= 1:
+            raise ValueError(f'keyframe {key["frame"]}: pivot blend must be between 0 and 1.')
+        camera.append({"frame": key["frame"], "pivot": reference,
+                       "pivot_target": target, "pivot_blend": blend,
+                       **{name: key[name] for name in AXES}})
     return {"pivots": pivots, "camera": camera}
 
 
@@ -162,6 +171,8 @@ def dumps(path: Path) -> str:
                              for key in pivot["keys"]]}
                    for pivot in path["pivots"]],
         "camera": [{"frame": int(key["frame"]), "pivot": key.get("pivot", path["pivots"][0]["id"]),
+                    "pivot_target": key.get("pivot_target", key.get("pivot", path["pivots"][0]["id"])),
+                    "pivot_blend": round(key.get("pivot_blend", 0), 4),
                     **{name: round(axis(key, name), 4) for name in AXES}}
                    for key in path["camera"]],
     }
@@ -237,19 +248,55 @@ def pose_at(path, frame: float) -> Pose:
     """Camera pose on an output frame, with the pivot it orbits under ``"pivot"``.
 
     The path is held before the first and after the last keyframe. Each keyframe's
-    pivot is resolved to a position and frame first, so a change of pivot between
-    keyframes interpolates as a move rather than a jump.
+    pivot pair is resolved first. Compatible runs share a PCHIP blend ratio;
+    other spans ease between resolved pivots without overshoot.
     """
     path = _as_path(path)
     by_id = {pivot["id"]: pivot for pivot in path["pivots"]}
-    keys = []
-    for key in path["camera"]:
-        resolved = pivot_at(by_id[key.get("pivot", path["pivots"][0]["id"])], key["frame"])
-        keys.append({**key, **{carried: resolved[name] for carried, name in zip(_CARRIED, PIVOT_AXES)}})
-    defaults = dict(DEFAULTS, **{carried: PIVOT_DEFAULTS[name] for carried, name in zip(_CARRIED, PIVOT_AXES)})
-    pose = _interpolate(keys, frame, AXES + _CARRIED, defaults)
-    return {**{name: pose[name] for name in AXES},
-            "pivot": {name: pose[carried] for carried, name in zip(_CARRIED, PIVOT_AXES)}}
+    keys = path["camera"]
+    left = right = keys[0] if frame <= keys[0]["frame"] else keys[-1]
+    amount = 0.0
+    if keys[0]["frame"] < frame < keys[-1]["frame"]:
+        for index, (a, b) in enumerate(zip(keys, keys[1:])):
+            if frame <= b["frame"]:
+                left, right = a, b
+                u = (frame - a["frame"]) / (b["frame"] - a["frame"])
+                amount = u * u * (3 - 2 * u)
+                def weights(key):
+                    """Active pivot contributions for compatible handoff interpolation."""
+                    identifier = key.get("pivot", path["pivots"][0]["id"])
+                    target = key.get("pivot_target", identifier)
+                    blend = key.get("pivot_blend", 0)
+                    if identifier == target:
+                        return {identifier: 1.0}
+                    return {name: value for name, value in ((identifier, 1 - blend), (target, blend)) if value > 0}
+
+                pair = dict.fromkeys([*weights(a), *weights(b)])
+                if len(pair) == 2:
+                    target = list(pair)[1]
+                    start, end = index, index + 1
+                    while start > 0 and all(name in pair for name in weights(keys[start - 1])):
+                        start -= 1
+                    while end + 1 < len(keys) and all(name in pair for name in weights(keys[end + 1])):
+                        end += 1
+                    track = [{"frame": key["frame"], "blend": weights(key).get(target, 0)}
+                             for key in keys[start:end + 1]]
+                    wa, wb = weights(a).get(target, 0), weights(b).get(target, 0)
+                    if wa != wb:
+                        amount = (_interpolate(track, frame, ("blend",), {"blend": 0})["blend"] - wa) / (wb - wa)
+                break
+
+    def resolve(key):
+        """Resolve one key's explicit two-pivot attachment."""
+        identifier = key.get("pivot", path["pivots"][0]["id"])
+        a = pivot_at(by_id[identifier], key["frame"])
+        b = pivot_at(by_id[key.get("pivot_target", identifier)], key["frame"])
+        blend = key.get("pivot_blend", 0)
+        return {name: a[name] + (b[name] - a[name]) * blend for name in PIVOT_AXES}
+
+    a, b = resolve(left), resolve(right)
+    return {**_interpolate(keys, frame, AXES, DEFAULTS),
+            "pivot": {name: a[name] + (b[name] - a[name]) * amount for name in PIVOT_AXES}}
 
 
 def poses(path, frame_count: int) -> list[Pose]:

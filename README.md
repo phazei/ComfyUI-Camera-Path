@@ -93,6 +93,27 @@ in the middle of the frame and a path drops onto other footage without rescaling
 one per subject and pick which pivot each keyframe orbits; a keyframe that switches
 pivot eases the camera across to the new one instead of jumping.
 
+Each camera also has **Blend to** and **Pivot blend %**. At 0% it uses its primary
+pivot; at 100% it uses the destination pivot's position and orientation. The target
+is stored explicitly, so adding another camera does not silently retarget an existing
+blend. A missing target is initially inferred from the next distinct camera pivot.
+Changing the primary pivot starts an unblended attachment; it does not preserve the shot.
+
+**Add keyframe** captures the current camera settings and two-pivot blend, keeping
+the preceding camera's primary pivot. Repeated insertion within that handoff preserves
+the shot at the inserted frame, within saved numeric precision. Automatic curve slopes
+are recalculated, so the surrounding motion can still change. Compatible keys share
+one PCHIP blend curve rather than stopping the pivot handoff at every inserted key.
+
+A span running from an A/B blend straight into a B/C blend needs three pivots to
+describe its middle, which a keyframe cannot store. Adding a camera there still works:
+it is attached to the pivot the previous camera was blending towards, and its orbit and
+aim are **solved to reproduce the shot on show** rather than copied. Truck, boom and
+dolly come back as zero, so the numbers look different even when the camera does not.
+The status line says so for ten seconds, and says `approximate` instead of `estimated`
+when an axis limit stopped it landing exactly. Such a camera changes the motion around
+it more than an ordinary insertion does.
+
 `tilt` and `roll` on a pivot straighten the orbit when the shot was pitched or rolled:
 without them, circling a subject in a photo taken looking down comes out tilted.
 Select the pivot and adjust until the scene stands upright in the viewport.
@@ -138,14 +159,14 @@ The node carries a 3D editor:
 
 * a scene viewport with the orbit sphere, the camera path, numbered keyframes, the
   pivots, a floor grid and a frustum showing where the lens actually points — drag
-  a keyframe or the camera to orbit, ctrl+drag to truck and boom, drag a pivot to
+  a numbered keyframe to orbit, ctrl+drag to truck and boom, drag a pivot to
   move it, drag the background to turn the view, shift+drag or middle-drag to pan,
   double-click the background to recentre, wheel to zoom, alt+wheel for distance.
   The view turns about whichever pivot is selected or in use, so a subject off to
   one side stays put while you look around it
 * a timeline with the keyframes on it, scrubbing and playback at the `fps` input's rate
 * a compact azimuth dial and pan/tilt puck, plus sliders for the remaining camera
-  axes, a lock-on-target checkbox and a pivot dropdown; selecting a pivot shows
+  axes, a lock-on-target checkbox, pivot dropdowns and a blend percentage; selecting a pivot shows
   its position, tilt/roll and heading sliders instead
 * a camera view that reprojects the real scene
 
@@ -153,6 +174,12 @@ Drag the node taller and the two views grow with it; make it wide and they sit s
 by side. **Reset key** resets the selected camera relative to its pivot,
 **Snap to auto** puts a pivot back on the subject the
 node found, and **Reset path** clears everything after confirming.
+
+Deleting a camera clears its selection without seeking to another key or recentering
+the overview. The shot at the current time may still change because the path changed.
+The purple ring marks the live camera at the playhead: between keys it is informational,
+not a shortcut to the selected key elsewhere. At the selected key's own time it can
+still be dragged to edit that camera. **Reset key** also clears the pivot blend to 0%.
 
 Drag clockwise around the azimuth dial to increase the orbit angle. It accumulates
 across full turns within the existing -720 to +720 degree range. Its centre value

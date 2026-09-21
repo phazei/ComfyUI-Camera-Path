@@ -11,10 +11,10 @@
  * axes, or a pivot, which shows its position. The pivot a keyframe orbits is chosen
  * from a dropdown on the keyframe.
  */
-import { poseAt, pivotAt, normalizePath, serializePath, identityPose, defaultPath, defaultPivot,
+import { poseAt, pivotAt, pivotBlendAt, normalizePath, serializePath, identityPose, defaultPath, defaultPivot,
          PIVOT_AXES, PIVOT_DEFAULTS } from './interpolate.js';
 import { poseCamera, cameraScenePosition, pivotWorld, scenePoint, worldOffset, screenBasis, orbitFrame,
-         uprightRotation, dragOrbit, dragTruck, renderCamera, renderScene, markerLattice,
+         uprightRotation, dragOrbit, dragTruck, solvePose, renderCamera, renderScene, markerLattice,
          concatClouds } from './geometry.js';
 import { loadPreview, createPreview, sampleFor } from './preview.js';
 import { floorGrid, placeholderPreview, DEFAULT_HALF_HEIGHT } from './furniture.js';
@@ -59,6 +59,9 @@ const PIVOT_POSITION = PIVOT_FIELDS.slice(0, 3);
 
 /** Below this widget width the scene and the render stay stacked. */
 const SIDE_BY_SIDE_WIDTH = 720;
+
+/** How long a transient notice stays in the status line, in milliseconds. */
+const NOTICE_MS = 10000;
 
 /** Scene marker radii, in layout pixels: [unselected, selected]. */
 const KEY_RADIUS = [9, 11];
@@ -215,7 +218,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
     </div>
     <div class="stage">
       <div class="viewport"><canvas class="scene"></canvas>
-        <div class="hint">Drag the camera or a keyframe to orbit \u00b7 ctrl+drag to truck and boom \u00b7 drag a pivot to move it \u00b7 drag the background to turn the view \u00b7 wheel to zoom \u00b7 alt+wheel for distance</div>
+        <div class="hint">Drag a numbered keyframe to orbit \u00b7 ctrl+drag to truck and boom \u00b7 the live ring shows the playhead \u00b7 drag a pivot to move it \u00b7 drag the background to turn the view \u00b7 wheel to zoom \u00b7 alt+wheel for distance</div>
       </div>
       <div class="render"><canvas></canvas><div class="label"></div></div>
     </div>
@@ -229,6 +232,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
     <div class="row tools" data-panel="camera">
       <span class="name">Orbits</span>
       <select data-role="pivot" title="The pivot this keyframe orbits around"></select>
+      <span>Blend to</span><select data-role="pivot-target" title="Explicit destination for this camera's pivot blend"></select>
       <span class="spacer"></span>
       <button data-action="reset-key" title="Reset the camera relative to its pivot, keeping its frame and pivot">Reset key</button>
       <button data-action="remove">\u2212 Keyframe</button>
@@ -252,6 +256,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
   const track = find('.track');
   const keys = find('.keys');
   const pivotSelect = find('[data-role=pivot]');
+  const targetSelect = find('[data-role=pivot-target]');
 
   /**
    * Builds a slider + number pair for one axis.
@@ -356,7 +361,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
       event.preventDefault();
     };
     surface.addEventListener('pointerdown', event => {
-      if (event.button !== 0 || gesture || event.target.closest('input')) return;
+      if (!key() || event.button !== 0 || gesture || event.target.closest('input')) return;
       const [x, y] = point(event);
       if (!aim && Math.hypot(x, y) < 0.3) return;
       if (root.contains(document.activeElement)) document.activeElement.blur();
@@ -378,6 +383,13 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
   }
 
   const orbitDial = buildRound(false), aimPuck = buildRound(true);
+  const blendField = buildField(cameraFields,
+    { name: 'pivot_blend', label: 'Pivot blend %', min: 0, max: 100, step: 1 }, (spec, value) => {
+      if (!key() || !Number.isFinite(value)) return;
+      key().pivot_blend = clamp(value / 100, 0, 1);
+      commit();
+      refresh();
+    });
   for (const spec of FIELDS) {
     if (!fields.has(spec.name)) fields.set(spec.name, buildField(cameraFields, spec, setAxis));
   }
@@ -393,6 +405,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
   lockBox.innerHTML = '<input type="checkbox"><span>Lock on target</span>';
   const lockInput = lockBox.querySelector('input');
   lockInput.addEventListener('change', () => {
+    if (!key()) return;
     key().lock = lockInput.checked ? 1 : 0;
     commit();
     refresh();
@@ -400,7 +413,23 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
   find('.fields[data-panel=camera]').append(lockBox);
 
   pivotSelect.addEventListener('change', () => {
+    if (!key()) return;
     key().pivot = pivotSelect.value;
+    key().pivot_blend = 0;
+    key().pivot_target = path.camera.slice(selected + 1).find(item => item.pivot !== key().pivot)?.pivot ?? key().pivot;
+    // Seed only unused handoffs; never retarget an authored blend when a neighbour changes.
+    path.camera.forEach((item, index) => {
+      if (!(item.pivot_blend ?? 0) && (item.pivot_target ?? item.pivot) === item.pivot) {
+        item.pivot_target = path.camera.slice(index + 1).find(next => next.pivot !== item.pivot)?.pivot ?? item.pivot;
+      }
+    });
+    commit();
+    refresh();
+  });
+  targetSelect.addEventListener('change', () => {
+    if (!key()) return;
+    key().pivot_target = targetSelect.value;
+    if (key().pivot_target === key().pivot) key().pivot_blend = 0;
     commit();
     refresh();
   });
@@ -409,6 +438,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
   let written = '';
   let selected = 0;
   let selectedPivot = -1;
+  let heldViewPivot = null;
   let playhead = 0;
   let yaw = 0.55, pitch = 0.45, zoom = 1;
   /** Scene-space offset of the view's rotation centre from the view pivot, set by panning. */
@@ -423,6 +453,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
   let sceneDepth = null;
   let playing = false, frameRequest = 0, playStart = 0, playFrom = 0;
   let error = '';
+  let notice = '', noticeTimer = 0;
   let disposed = false;
   let hits = { marks: [], pivots: [], camera: [0, 0], view: null };
 
@@ -466,7 +497,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
    * pivot, or the one the current pose orbits.
    * @returns {{x: number, y: number, z: number, tilt: number, roll: number}} Resolved pivot.
    */
-  const viewPivot = () => (selectedPivot >= 0
+  const viewPivot = () => heldViewPivot ?? (selectedPivot >= 0
     ? pivotAt(path.pivots[selectedPivot], playhead)
     : poseAt(path, playhead).pivot);
 
@@ -515,6 +546,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
    * @returns {void}
    */
   function selectKey(index) {
+    heldViewPivot = null;
     selected = clamp(index, 0, path.camera.length - 1);
     selectedPivot = -1;
     playhead = clamp(key().frame, 0, lastFrame());
@@ -526,6 +558,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
    * @returns {void}
    */
   function selectPivot(index) {
+    heldViewPivot = null;
     selectedPivot = clamp(index, 0, path.pivots.length - 1);
   }
 
@@ -536,7 +569,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
    * @returns {void}
    */
   function setAxis(spec, value) {
-    if (!Number.isFinite(value)) return;
+    if (!key() || !Number.isFinite(value)) return;
     key()[spec.name] = clamp(value, spec.min, spec.max);
     commit();
     refresh();
@@ -556,11 +589,65 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
   }
 
   /**
+   * A keyframe for a span no two pivots can express, fitted to the camera on show.
+   *
+   * The pivot is the one the camera was heading for: the previous keyframe's blend
+   * target while it is blending, otherwise the pivot it orbits. The axes are then
+   * solved against that pivot, so the shot is kept even though the numbers change.
+   * @param {number} frame Output frame.
+   * @param {object} wanted Camera basis to reproduce.
+   * @param {object} pose Interpolated pose, for orbit branch choice.
+   * @returns {object} The keyframe to insert.
+   */
+  function estimatedKey(frame, wanted, pose) {
+    const previous = [...path.camera].reverse().find(item => item.frame < frame) ?? path.camera[0];
+    const heading = (previous.pivot_blend ?? 0) > 0 && previous.pivot_target !== previous.pivot
+      ? previous.pivot_target : previous.pivot;
+    const limit = (name, value) => {
+      const spec = FIELDS.find(field => field.name === name);
+      return spec ? clamp(value, spec.min, spec.max) : value;
+    };
+    const solved = solvePose(wanted, pivotAt(pivotOf(heading), frame), unit(), pose, limit);
+    return { frame, pivot: heading, pivot_target: heading, pivot_blend: 0, ...solved };
+  }
+
+  /**
+   * How well an estimated keyframe reproduces the camera it was fitted to.
+   * @param {object} wanted Camera basis the insertion was aiming at.
+   * @param {number} frame Output frame.
+   * @returns {string} Status notice.
+   */
+  function estimateNotice(wanted, frame) {
+    const got = poseCamera(poseAt(path, frame), unit());
+    const off = Math.hypot(...[0, 1, 2].map(i => got.eye[i] - wanted.eye[i])) > 0.01 * unit()
+      || ['right', 'down', 'forward'].some(name =>
+        [0, 1, 2].reduce((total, i) => total + got[name][i] * wanted[name][i], 0) < 0.9999);
+    const index = path.pivots.findIndex(pivot => pivot.id === key().pivot);
+    return `Added on pivot ${index + 1}; pose ${off ? 'approximate' : 'estimated'}.`;
+  }
+
+  /**
+   * Shows a transient status message, replacing any earlier one.
+   * @param {string} text Message, or '' to clear.
+   * @returns {void}
+   */
+  function setNotice(text) {
+    clearTimeout(noticeTimer);
+    notice = text;
+    if (text) {
+      noticeTimer = setTimeout(() => {
+        notice = '';
+        if (!disposed) refresh();
+      }, NOTICE_MS);
+    }
+  }
+
+  /**
    * Is a pivot referenced by any keyframe? Such a pivot cannot be deleted.
    * @param {string} identifier Pivot id.
    * @returns {boolean} True when a keyframe orbits it.
    */
-  const inUse = identifier => path.camera.some(item => item.pivot === identifier);
+  const inUse = identifier => path.camera.some(item => item.pivot === identifier || item.pivot_target === identifier);
 
   // -- Drawing ---------------------------------------------------------------
 
@@ -735,6 +822,10 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
       line(at, corner, '#8c4cffaa', 1);
       line(corner, corners[(index + 1) % 4], '#8c4cffaa', 1);
     });
+    // Camera-local up, not screen up: the top marker follows roll and aim.
+    const top = corners[0].map((value, i) => (value + corners[1][i]) / 2);
+    const down = direction(basis.down);
+    line(top, top.map((value, i) => value - down[i] * spread * reach * 0.25), '#8c4cff', 1.5);
     line(centre, at, '#6a5a8f55', 1);
 
     // Pivots and keyframes are spread as one set: a reset camera sits on its own pivot,
@@ -821,7 +912,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
    * @returns {void}
    */
   function refresh() {
-    selected = clamp(selected, 0, path.camera.length - 1);
+    selected = clamp(selected, -1, path.camera.length - 1);
     selectedPivot = selectedPivot < 0 ? -1 : clamp(selectedPivot, 0, path.pivots.length - 1);
     playhead = clamp(playhead, 0, lastFrame());
     keys.replaceChildren();
@@ -840,13 +931,13 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
       `frame ${Math.round(playhead)} / ${lastFrame()}  ${(playhead / fps()).toFixed(2)}s`;
     find('[data-role=selection]').textContent = selectedPivot >= 0
       ? `pivot ${selectedPivot + 1} of ${path.pivots.length}`
-      : `keyframe ${selected + 1} of ${path.camera.length} \u00b7 frame ${key().frame}`;
+      : selected < 0 ? 'No camera selected' : `keyframe ${selected + 1} of ${path.camera.length} \u00b7 frame ${key().frame}`;
     const reset = find('[data-action=reset]');
     reset.textContent = inputPath ? 'Reset to input' : 'Reset path';
     reset.title = inputPath
       ? 'Replace the current path with the one on the camera_path input'
       : 'Delete every keyframe and start again from the source camera';
-    find('[data-action=remove]').disabled = path.camera.length <= 1;
+    find('[data-action=remove]').disabled = selected < 0 || path.camera.length <= 1;
     find('[data-action=add]').disabled = path.camera.length >= MAX_KEYS
       || path.camera.some(item => item.frame === Math.round(playhead));
     find('[data-action=add-pivot]').disabled = path.pivots.length >= MAX_PIVOTS;
@@ -854,6 +945,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
     const showPivot = selectedPivot >= 0;
     for (const panel of root.querySelectorAll('[data-panel]')) {
       panel.hidden = (panel.dataset.panel === 'pivot') !== showPivot;
+      if (!showPivot && selected < 0) panel.hidden = true;
     }
     const sync = (field, value) => {
       if (field.slider && document.activeElement !== field.slider) field.slider.value = String(value);
@@ -866,8 +958,9 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
       find('[data-action=remove-pivot]').disabled = path.pivots.length <= 1 || inUse(pivot.id);
       find('[data-action=snap-pivot]').disabled =
         PIVOT_AXES.every(name => pivotKey(pivot)[name] === PIVOT_DEFAULTS[name]);
-    } else {
+    } else if (key()) {
       for (const [name, field] of fields) sync(field, key()[name]);
+      sync(blendField, (key().pivot_blend ?? 0) * 100);
       const angle = key().azimuth * Math.PI / 180;
       orbitDial.mark.style.left = `${50 + Math.sin(angle) * 43}%`;
       orbitDial.mark.style.top = `${50 - Math.cos(angle) * 43}%`;
@@ -885,10 +978,14 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
       }));
       pivotSelect.value = key().pivot;
       pivotSelect.disabled = path.pivots.length <= 1;
+      targetSelect.replaceChildren(...[...pivotSelect.options].map(option => option.cloneNode(true)));
+      targetSelect.value = key().pivot_target ?? key().pivot;
+      targetSelect.disabled = path.pivots.length <= 1;
+      blendField.slider.disabled = blendField.number.disabled = targetSelect.value === key().pivot;
     }
     const beyond = path.camera.filter(item => item.frame > lastFrame()).length;
     const status = beyond ? `${beyond} keyframe(s) sit past frame ${lastFrame()} and are held at the end.` : '';
-    find('.status').textContent = error || status;
+    find('.status').textContent = error || notice || status;
     find('.status').classList.toggle('error', Boolean(error));
     drawScene();
     drawRender();
@@ -928,7 +1025,10 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
     const within = mark => Math.hypot(mark.at[0] - x, mark.at[1] - y) < mark.radius + 5;
     const near = [...hits.marks].reverse().find(within);
     if (near) return { kind: 'key', index: near.index };
-    if (Math.hypot(hits.camera[0] - x, hits.camera[1] - y) < 16) return { kind: 'key', index: selected };
+    if (Math.hypot(hits.camera[0] - x, hits.camera[1] - y) < 16) {
+      return key() && key().frame === playhead && selectedPivot < 0
+        ? { kind: 'key', index: selected } : { kind: 'live' };
+    }
     const pivot = hits.pivots.find(mark => mark.index === selectedPivot && within(mark))
       ?? hits.pivots.find(within);
     if (pivot) return { kind: 'pivot', index: pivot.index };
@@ -947,6 +1047,11 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
       return;
     }
     stop();
+    if (grab.kind === 'live') {
+      // The live camera is not an authored key. Clicking it must not seek or edit one.
+      drag = null;
+      return;
+    }
     if (grab.kind === 'pivot') {
       selectPivot(grab.index);
       const position = pivotKey(path.pivots[grab.index]);
@@ -966,7 +1071,8 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
   scene.addEventListener('pointermove', event => {
     const [x, y] = pointerInScene(event);
     if (!drag) {
-      scene.style.cursor = grabbableAt(x, y) ? 'grab' : 'move';
+      const grab = grabbableAt(x, y);
+      scene.style.cursor = grab?.kind === 'live' ? 'default' : grab ? 'grab' : 'move';
       return;
     }
     const dx = x - drag.x, dy = y - drag.y;
@@ -1031,7 +1137,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
     event.preventDefault();
     event.stopPropagation();
     if (event.altKey) {
-      if (selectedPivot < 0) setAxis(DISTANCE, key().distance * Math.exp(event.deltaY * 0.001));
+      if (selectedPivot < 0 && key()) setAxis(DISTANCE, key().distance * Math.exp(event.deltaY * 0.001));
       return;
     }
     zoom = clamp(zoom * Math.exp(-event.deltaY * 0.0015), 0.3, 20);
@@ -1057,6 +1163,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
       drag = { mode: 'key' };
     } else {
       drag = { mode: 'scrub' };
+      heldViewPivot = null;
       playhead = trackFrame(event);
     }
     refresh();
@@ -1129,17 +1236,23 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
       const frame = Math.round(playhead);
       if (path.camera.length >= MAX_KEYS || path.camera.some(item => item.frame === frame)) return;
       const { pivot: _position, ...pose } = poseAt(path, frame);
-      // A new key inherits the pivot of the key before it, or the first key's.
-      const before = [...path.camera].reverse().find(item => item.frame < frame) ?? path.camera[0];
-      path.camera.push({ frame, pivot: before.pivot, ...pose });
+      const blend = pivotBlendAt(path, frame);
+      const captured = blend && poseAt({ ...path, camera: [{ frame, ...blend, ...pose }] }, frame).pivot;
+      const exact = blend && PIVOT_AXES.every(name => Math.abs(captured[name] - _position[name]) <= 1e-9);
+      const wanted = poseCamera({ ...pose, pivot: _position }, unit());
+      path.camera.push(exact ? { frame, ...blend, ...pose } : estimatedKey(frame, wanted, pose));
       path.camera.sort((a, b) => a.frame - b.frame);
       selected = path.camera.findIndex(item => item.frame === frame);
       selectedPivot = -1;
+      heldViewPivot = null;
       commit();
+      setNotice(exact ? '' : estimateNotice(wanted, frame));
     }
-    if (action === 'remove' && path.camera.length > 1) {
+    if (action === 'remove' && selected >= 0 && path.camera.length > 1) {
+      heldViewPivot = { ...viewPivot() };
       path.camera.splice(selected, 1);
-      selectKey(selected);
+      selected = -1;
+      selectedPivot = -1;
       commit();
     }
     if (action === 'add-pivot' && path.pivots.length < MAX_PIVOTS) {
@@ -1159,12 +1272,13 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
       Object.assign(pivotKey(path.pivots[selectedPivot]), PIVOT_DEFAULTS);
       commit();
     }
-    if (action === 'recentre-aim') {
+    if (action === 'recentre-aim' && key()) {
       key().pan = key().tilt = 0;
       commit();
     }
-    if (action === 'reset-key') {
-      path.camera[selected] = { frame: key().frame, pivot: key().pivot, ...identityPose() };
+    if (action === 'reset-key' && key()) {
+      path.camera[selected] = { frame: key().frame, pivot: key().pivot,
+        pivot_target: key().pivot_target ?? key().pivot, pivot_blend: 0, ...identityPose() };
       commit();
     }
     if (action === 'reset') resetPath();
@@ -1172,6 +1286,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
       zoom = clamp(zoom * (action === 'zoom-in' ? 1.25 : 0.8), 0.3, 20);
     }
     if (action === 'view-reset') {
+      heldViewPivot = null;
       yaw = 0.55;
       pitch = 0.45;
       zoom = 1;
@@ -1192,6 +1307,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
     if (raw !== written) {
       try {
         path = normalizePath(JSON.parse(raw));
+        heldViewPivot = null;
         written = raw;
         error = '';
         selected = clamp(selected, 0, path.camera.length - 1);
@@ -1213,6 +1329,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
   function loadPath(data) {
     try {
       path = normalizePath(data);
+      heldViewPivot = null;
       error = '';
       selected = clamp(selected, 0, path.camera.length - 1);
       selectedPivot = -1;
@@ -1303,6 +1420,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
     destroy() {
       disposed = true;
       previewToken++;
+      clearTimeout(noticeTimer);
       stop();
       observer.disconnect();
     },

@@ -83,7 +83,8 @@ class NodeRun(unittest.TestCase):
         for index in range(6):
             self.assertTrue(torch.equal(video[index], source[0]))
         self.assertFalse(bool(mask.any()))
-        self.assertEqual(json.loads(path)["camera"], [{"frame": 0, "pivot": "p1", **context.trajectory.DEFAULTS}])
+        self.assertEqual(json.loads(path)["camera"], [{"frame": 0, "pivot": "p1", "pivot_target": "p1",
+                                                     "pivot_blend": 0, **context.trajectory.DEFAULTS}])
 
     def test_fps_is_a_timeline_rate_and_never_reaches_the_render(self):
         # The rendered frames are compared loosely on purpose: the splat's tie-break is
@@ -194,7 +195,8 @@ class NodeRun(unittest.TestCase):
         self.assertTrue(torch.equal(video[0], source[0]))
         # ...but the seed is handed to the editor so Reset path can offer it.
         data = json.loads(output["ui"]["camera_path"][0])
-        self.assertEqual(data["input_path"]["camera"], [{"frame": 0, "pivot": "p1", **context.trajectory.DEFAULTS,
+        self.assertEqual(data["input_path"]["camera"], [{"frame": 0, "pivot": "p1", "pivot_target": "p1",
+                                                       "pivot_blend": 0, **context.trajectory.DEFAULTS,
                                                          "azimuth": 45.0}])
 
     def test_an_off_axis_pivot_moves_a_reset_camera(self):

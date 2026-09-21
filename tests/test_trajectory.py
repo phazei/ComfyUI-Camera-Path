@@ -13,7 +13,8 @@ class ParsePath(unittest.TestCase):
 
     def test_missing_axes_fall_back_to_defaults(self):
         path = trajectory.parse_path('[{"frame": 3, "azimuth": 10}]')
-        self.assertEqual(path["camera"][0], {"frame": 3, "pivot": "p1", **trajectory.DEFAULTS, "azimuth": 10.0})
+        self.assertEqual(path["camera"][0], {"frame": 3, "pivot": "p1", "pivot_target": "p1", "pivot_blend": 0,
+                                           **trajectory.DEFAULTS, "azimuth": 10.0})
 
     def test_a_bare_array_is_a_version_1_path_on_the_automatic_pivot(self):
         path = trajectory.parse_path('[{"frame": 0}, {"frame": 10, "azimuth": 5}]')
@@ -122,8 +123,58 @@ class Serialization(unittest.TestCase):
         data = json.loads(trajectory.dumps(trajectory.parse_path('[{"frame": 0}]')))
         self.assertEqual(data["version"], trajectory.VERSION)
         self.assertEqual(list(data), ["version", "pivots", "camera"])
-        self.assertEqual(list(data["camera"][0]), ["frame", "pivot", *trajectory.AXES])
+        self.assertEqual(list(data["camera"][0]), ["frame", "pivot", "pivot_target", "pivot_blend", *trajectory.AXES])
         self.assertEqual(list(data["pivots"][0]["keys"][0]), ["frame", *trajectory.PIVOT_AXES])
+
+
+class PivotBlending(unittest.TestCase):
+    def path(self, camera):
+        return trajectory.parse_path({
+            "pivots": [{"id": "a", "keys": [{"frame": 0, "x": -1, "z": 1, "heading": -30}]},
+                       {"id": "b", "keys": [{"frame": 0, "x": 3, "z": 2, "heading": 90}]},
+                       {"id": "c", "keys": [{"frame": 0, "x": 0, "z": 3}]}],
+            "camera": camera,
+        })
+
+    def test_explicit_blend_resolves_all_pivot_axes(self):
+        path = self.path([{"frame": 0, "pivot": "a", "pivot_target": "b", "pivot_blend": 0.25}])
+        pivot = trajectory.pose_at(path, 0)["pivot"]
+        self.assertEqual(pivot["x"], 0)
+        self.assertEqual(pivot["z"], 1.25)
+        self.assertEqual(pivot["heading"], 0)
+        self.assertEqual(trajectory.parse_path(trajectory.dumps(path)), path)
+
+    def test_shared_blend_stays_smooth_through_compatible_keys(self):
+        path = self.path([{"frame": 0, "pivot": "a"},
+                          {"frame": 10, "pivot": "a", "pivot_target": "b", "pivot_blend": 0.5},
+                          {"frame": 20, "pivot": "b"}])
+        epsilon = 0.0001
+        left = trajectory.pose_at(path, 10 - epsilon)["pivot"]["x"]
+        center = trajectory.pose_at(path, 10)["pivot"]["x"]
+        right = trajectory.pose_at(path, 10 + epsilon)["pivot"]["x"]
+        self.assertGreater((right - center) / epsilon, 0.1)
+        self.assertAlmostEqual((center - left) / epsilon, (right - center) / epsilon, places=5)
+        for frame in range(21):
+            pivot = trajectory.pose_at(path, frame)["pivot"]
+            amount = (pivot["x"] + 1) / 4
+            self.assertAlmostEqual(pivot["z"], 1 + amount)
+            self.assertAlmostEqual(pivot["heading"], -30 + 120 * amount)
+
+    def test_targets_are_inferred_once_and_survive_neighbour_changes(self):
+        path = self.path([{"frame": 0, "pivot": "a"}, {"frame": 20, "pivot": "b"}])
+        self.assertEqual(path["camera"][0]["pivot_target"], "b")
+        path["camera"][0]["pivot_blend"] = 0.4
+        before = trajectory.pose_at(path, 0)
+        path["camera"].insert(1, {"frame": 10, "pivot": "c"})
+        loaded = trajectory.parse_path(trajectory.dumps(path))
+        self.assertEqual(loaded["camera"][0]["pivot_target"], "b")
+        self.assertEqual(trajectory.pose_at(loaded, 0), before)
+
+    def test_rejects_invalid_blends_and_targets(self):
+        for fields in ({"pivot_blend": -0.1}, {"pivot_blend": 1.1}, {"pivot_blend": float("nan")},
+                       {"pivot_blend": float("inf")}, {"pivot_target": "missing"}):
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                self.path([{"frame": 0, "pivot": "a", **fields}])
 
 
 if __name__ == "__main__":

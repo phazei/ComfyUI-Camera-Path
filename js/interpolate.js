@@ -24,9 +24,6 @@ export const PIVOT_AXES = ["x", "y", "z", "tilt", "roll", "heading"];
 /** The automatic pivot: on the optical axis, one pivot depth in, frame of the source camera. */
 export const PIVOT_DEFAULTS = { x: 0, y: 0, z: 1, tilt: 0, roll: 0, heading: 0 };
 
-/** Hidden axes the camera track carries so a pivot switch interpolates as a move. */
-const CARRIED = PIVOT_AXES.map((name) => `_pivot_${name}`);
-
 export const VERSION = 2;
 
 /**
@@ -139,9 +136,8 @@ export function pivotAt(pivot, frame) {
 
 /**
  * Camera pose on an output frame, with the pivot it orbits under `pivot`. Each
- * keyframe's pivot is resolved to a position and frame first, so a change of pivot
- * between keyframes interpolates as a move rather than a jump. Mirrors
- * `trajectory.pose_at`.
+ * keyframe resolves its primary/target pivot pair before a shared handoff curve
+ * interpolates the effective pivot. Mirrors `trajectory.pose_at`.
  * @param {object|object[]} path Path, or camera keyframes sorted by frame.
  * @param {number} frame Output frame index; may be fractional while scrubbing.
  * @returns {object} Pose with every axis filled in and `pivot: {x, y, z, tilt, roll}`.
@@ -150,15 +146,76 @@ export function poseAt(path, frame) {
   path = asPath(path);
   if (!path.camera?.length) return { ...identityPose(), pivot: { ...PIVOT_DEFAULTS } };
   const byId = new Map(path.pivots.map((pivot) => [pivot.id, pivot]));
-  const keys = path.camera.map((key) => {
-    const resolved = pivotAt(byId.get(key.pivot ?? path.pivots[0].id), key.frame);
-    return { ...key, ...Object.fromEntries(PIVOT_AXES.map((name, i) => [CARRIED[i], resolved[name]])) };
-  });
-  const defaults = { ...DEFAULTS, ...Object.fromEntries(PIVOT_AXES.map((name, i) => [CARRIED[i], PIVOT_DEFAULTS[name]])) };
-  const pose = interpolate(keys, frame, [...AXES, ...CARRIED], defaults);
-  const result = Object.fromEntries(AXES.map((name) => [name, pose[name]]));
-  result.pivot = Object.fromEntries(PIVOT_AXES.map((name, i) => [name, pose[CARRIED[i]]]));
+  const { left, right, amount } = pivotSegment(path, frame);
+  const resolve = key => {
+    const id = key.pivot ?? path.pivots[0].id;
+    const a = pivotAt(byId.get(id), key.frame);
+    const b = pivotAt(byId.get(key.pivot_target ?? id), key.frame);
+    return Object.fromEntries(PIVOT_AXES.map(name => [name, a[name] + (b[name] - a[name]) * (key.pivot_blend ?? 0)]));
+  };
+  const a = resolve(left), b = resolve(right);
+  const result = interpolate(path.camera, frame, AXES, DEFAULTS);
+  result.pivot = Object.fromEntries(PIVOT_AXES.map(name => [name, a[name] + (b[name] - a[name]) * amount]));
   return result;
+}
+
+/**
+ * Shared pivot handoff progress; camera axes retain their independent PCHIP curves.
+ * @param {object} path Camera path.
+ * @param {number} frame Sample time.
+ * @returns {object} Bracketing keys and shared blend progress, held outside the path.
+ */
+function pivotSegment(path, frame) {
+  const keys = path.camera;
+  if (frame <= keys[0].frame) return { left: keys[0], right: keys[0], amount: 0 };
+  for (let i = 1; i < keys.length; i++) {
+    if (frame > keys[i].frame) continue;
+    const left = keys[i - 1], right = keys[i];
+    const u = (frame - left.frame) / (right.frame - left.frame);
+    let amount = u * u * (3 - 2 * u);
+    const weights = key => {
+      const id = key.pivot ?? path.pivots[0].id, target = key.pivot_target ?? id;
+      const blend = key.pivot_blend ?? 0;
+      return id === target ? new Map([[id, 1]])
+        : new Map([[id, 1 - blend], [target, blend]].filter(([, value]) => value > 0));
+    };
+    const pair = new Set([...weights(left).keys(), ...weights(right).keys()]);
+    if (pair.size === 2) {
+      // One PCHIP ratio across a compatible run, not a new ease-in/out at each inserted key.
+      const target = [...pair][1];
+      const compatible = key => [...weights(key).keys()].every(id => pair.has(id));
+      let start = i - 1, end = i;
+      while (start > 0 && compatible(keys[start - 1])) start--;
+      while (end + 1 < keys.length && compatible(keys[end + 1])) end++;
+      const track = keys.slice(start, end + 1).map(key => ({ frame: key.frame, blend: weights(key).get(target) ?? 0 }));
+      const a = weights(left).get(target) ?? 0, b = weights(right).get(target) ?? 0;
+      if (a !== b) amount = (interpolate(track, frame, ['blend'], { blend: 0 }).blend - a) / (b - a);
+    }
+    return { left, right, amount };
+  }
+  return { left: keys.at(-1), right: keys.at(-1), amount: 0 };
+}
+
+/**
+ * Captures a two-pivot handoff for insertion, or rejects a mixed transition.
+ * @param {object} path Camera path.
+ * @param {number} frame Sample time.
+ * @returns {object|null} Stored pivot fields; null if more than two pivots contribute.
+ */
+export function pivotBlendAt(path, frame) {
+  const { left, right, amount } = pivotSegment(path, frame);
+  const weights = new Map();
+  for (const [key, factor] of [[left, 1 - amount], [right, amount]]) {
+    const id = key.pivot ?? path.pivots[0].id, blend = key.pivot_blend ?? 0;
+    for (const [pivot, weight] of [[id, 1 - blend], [key.pivot_target ?? id, blend]]) {
+      if (factor * weight > 1e-12) weights.set(pivot, (weights.get(pivot) ?? 0) + factor * weight);
+    }
+  }
+  const pivot = left.pivot ?? path.pivots[0].id;
+  const others = [...weights.keys()].filter(id => id !== pivot);
+  if (others.length > 1) return null;
+  const target = others[0] ?? left.pivot_target ?? pivot;
+  return { pivot, pivot_target: target, pivot_blend: target === pivot ? 0 : weights.get(target) ?? 0 };
 }
 
 // ── Serialization ──────────────────────────────────────────────────────────
@@ -203,13 +260,19 @@ export function normalizePath(data) {
     pivots.push({ id: item.id, keys });
   }
 
-  const camera = keysOf(data.camera, "keyframe", AXES, DEFAULTS).map(([item, key]) => {
+  const camera = keysOf(data.camera, "keyframe", AXES, DEFAULTS).map(([item, key], index, entries) => {
     if (key.distance <= 0) throw new Error(`keyframe ${key.frame}: distance must be positive`);
     const pivot = item.pivot ?? pivots[0].id;
     if (!pivots.some((candidate) => candidate.id === pivot)) {
       throw new Error(`keyframe ${key.frame}: no pivot with id "${pivot}"`);
     }
-    return { frame: key.frame, pivot, ...Object.fromEntries(AXES.map((name) => [name, key[name]])) };
+    const target = item.pivot_target ?? entries.slice(index + 1).map(([entry]) => entry.pivot ?? pivots[0].id)
+      .find(id => id !== pivot) ?? pivot;
+    const blend = Number(item.pivot_blend ?? 0);
+    if (!pivots.some(candidate => candidate.id === target)) throw new Error(`keyframe ${key.frame}: missing blend target`);
+    if (!Number.isFinite(blend) || blend < 0 || blend > 1) throw new Error(`keyframe ${key.frame}: pivot blend must be between 0 and 1`);
+    return { frame: key.frame, pivot, pivot_target: target, pivot_blend: blend,
+      ...Object.fromEntries(AXES.map((name) => [name, key[name]])) };
   });
   return { pivots, camera };
 }
@@ -233,6 +296,8 @@ export function serializePath(path) {
     })),
     camera: path.camera.map((key) => ({
       frame: key.frame, pivot: key.pivot ?? path.pivots[0].id,
+      pivot_target: key.pivot_target ?? key.pivot ?? path.pivots[0].id,
+      pivot_blend: round(key.pivot_blend ?? 0),
       ...Object.fromEntries(AXES.map((name) => [name, round(axis(key, name))])),
     })),
   }, null, 2);
