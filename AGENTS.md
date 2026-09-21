@@ -116,7 +116,8 @@ standalone. Everything that touches ComfyUI lives in `nodes/` and `__init__.py`.
 `CameraPath_Video` (`nodes/camera_path_video.py`):
 
 - Inputs: `source` (IMAGE), `moge_geometry` (MOGE_GEOMETRY), `frame_count` (INT, 120),
-  `fps` (FLOAT, 24), `markers` (BOOLEAN), `keyframes` (STRING), `camera_path` (STRING,
+  `fps` (FLOAT, 24), `markers` (BOOLEAN), `prune_depth_edges` (BOOLEAN, true),
+  `preview_quality` (COMBO, Medium (512)), `keyframes` (STRING), `camera_path` (STRING,
   socket only).
 - Outputs: `camera_video` (IMAGE, source resolution), `camera_path` (STRING, round-trips
   into the input), `video_mask` (MASK, 1 where nothing was reprojected).
@@ -309,11 +310,36 @@ drawn **and hit tested**; its `point` is where it really is. Consequences worth 
 
 ### Preview cache
 
-After a run the node writes up to 8 downscaled samples (long side 384) to ComfyUI's temp
+After a run the node writes up to 8 downscaled samples to ComfyUI's temp
 directory: an RGB PNG plus a depth PNG with 16-bit depth packed big-endian into R and G, and
-`B = 255` marking invalid. The metadata (normalised `fx/fy/cx/cy`, `pivot_z`, `z_low/z_high`,
+`B = 255` marking invalid, `B = 127` marking a valid but pruned point, and `B = 0` kept.
+The metadata (normalised `fx/fy/cx/cy`, `pivot_z`, `z_low/z_high`,
 `splat`, sample filenames) rides along in the UI payload. `js/preview.js` decodes it back
 into point clouds so dragging the path reprojects live without re-running MoGe.
+
+`preview_quality` selects Low (384), Medium (512, default), or High (768) long side,
+never upscaling the source. All points at the selected quality are drawn; there is no separate 90k-point
+stride limit. `renderScene` uses circular, depth-tested splats whose radius follows view
+scale relative to the cache focal length, capped at 3 CSS pixels. The floor keeps its
+single-pixel points. Neither change affects output resolution or video splatting.
+
+`geometry.prune_edges` inspects depth at a 512-long-side scale: 3x3 relative depth spread
+over 30%, or an invalid neighbour, rejects the point; the frame border does not. Bilinear
+resizing of the keep mask back to source size requires all contributing neighbours to
+survive. Pruning defaults ON and is applied after the anchor lens/unit are chosen, so
+toggling it cannot move cameras. The same function supplies the render and cached validity
+mask, before preview downsampling. JS consumes that mask directly rather than running a
+second, resolution-dependent pruning pass. The cache is always unpruned at the maximum
+level (768), independent of selected quality/pruning. Metadata includes the `levels` mapping
+and records the last run's `prune_depth_edges` and `quality`.
+
+`loadPreview` retains decoded RGB, depth, and keep flags; `createPreview` builds only the
+selected variant, with box-averaged colour and nearest-sampled depth/masks. The host's
+`readQuality` / `readPrune` accessors and widget callbacks trigger `editor.sync`, which
+rebuilds only if those settings changed, not during dragging. Both panes update without
+network requests or another run. A load finishing later uses the current widget values.
+Old caches without `levels` show a one-time rerun message rather than pretending they can
+restore discarded points. Output video changes still require execution.
 
 ## Code Style
 

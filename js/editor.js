@@ -16,7 +16,7 @@ import { poseAt, pivotAt, normalizePath, serializePath, identityPose, defaultPat
 import { poseCamera, cameraScenePosition, pivotWorld, scenePoint, worldOffset, screenBasis, orbitFrame,
          uprightRotation, dragOrbit, dragTruck, renderCamera, renderScene, markerLattice,
          concatClouds } from './geometry.js';
-import { loadPreview, sampleFor } from './preview.js';
+import { loadPreview, createPreview, sampleFor } from './preview.js';
 import { floorGrid, placeholderPreview, DEFAULT_HALF_HEIGHT } from './furniture.js';
 
 /** Timeline rate when the host has no fps widget to read. */
@@ -193,11 +193,14 @@ const STYLE = `
  *   since the node renders a plain image batch that carries no rate of its own.
  * @param {() => boolean} [host.readMarkers] Whether the node's markers checkbox is on;
  *   the lattice is shown in both views while it is, so the preview matches the render.
+ * @param {() => boolean} [host.readPrune] Apply depth-edge pruning to the cached cloud.
+ * @param {() => string} [host.readQuality] Named preview quality level.
  * @returns {{element: HTMLElement, sync: Function, loadPath: Function, setInputPath: Function, setPreview: Function, destroy: Function}}
  *   Editor handle. `element` goes into addDOMWidget().
  */
 export function createCameraEditor({ readPath, writePath, readFrameCount, readMarkers = () => false,
-                                     readFps = () => DEFAULT_FPS }) {
+                                     readFps = () => DEFAULT_FPS, readPrune = () => true,
+                                     readQuality = () => 'Medium (512)' }) {
   const root = document.createElement('section');
   root.className = 'cpath';
   root.innerHTML = `<style>${STYLE}</style>
@@ -413,6 +416,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
   let drag = null;
   /** The cloud on show: cached geometry once the node has run, the placeholder until then. */
   let preview = placeholderPreview();
+  let previewCache = null;
   let previewToken = 0;
   let inputPath = null;
   let sceneImage = null;
@@ -631,7 +635,9 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
     const device = { ...view, scale: view.scale * dpr, originX: view.originX * dpr, originY: view.originY * dpr };
     renderScene(floorGrid(unit(), halfHeight(), viewPivot()), device, target, unit(), 1);
     const cloud = cloudAt(playhead);
-    renderScene(cloud, device, target, unit(), Math.max(1, Math.round(cloud.count / 90000)));
+    const pointRadius = Math.min(Math.ceil(3 * dpr), Math.max(1,
+      Math.round(device.scale * 0.9 / preview.lens.fx)));
+    renderScene(cloud, device, target, unit(), 1, pointRadius);
     sceneContext.putImageData(sceneImage, 0, 0);
 
     const line = (a, b, color, lineWidth = 1) => {
@@ -1177,8 +1183,8 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
   // -- Host interface --------------------------------------------------------
 
   /**
-   * Re-reads the widgets. Called when the host changes keyframes, frame_count or
-   * markers. A malformed path is reported in the status line, never thrown.
+   * Re-reads the widgets and rebuilds preview clouds only when quality/pruning changes.
+   * A malformed path is reported in the status line, never thrown.
    * @returns {void}
    */
   function sync() {
@@ -1192,6 +1198,9 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
       } catch (problem) {
         error = `camera_path: ${problem.message}`;
       }
+    }
+    if (previewCache && (preview.quality !== readQuality() || preview.prune !== readPrune())) {
+      preview = createPreview(previewCache, readQuality(), readPrune());
     }
     refresh();
   }
@@ -1242,18 +1251,22 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
    */
   async function setPreview(meta, urlFor) {
     const token = ++previewToken;
-    if (!meta) {
+    if (!meta || !meta.levels) {
+      previewCache = null;
       if (!preview.placeholder) preview = placeholderPreview();
+      if (meta) error = 'Run the node once to refresh the cache for live preview settings.';
       refresh();
       return;
     }
     try {
       const loaded = await loadPreview(meta, urlFor);
       if (disposed || token !== previewToken) return;
-      preview = loaded;
+      previewCache = loaded;
+      preview = createPreview(loaded, readQuality(), readPrune());
       error = '';
     } catch (problem) {
       if (disposed || token !== previewToken) return;
+      previewCache = null;
       if (!preview.placeholder) preview = placeholderPreview();
       error = 'Could not load the cached geometry preview.';
       console.warn('[CameraPath] could not load the cached geometry', problem);

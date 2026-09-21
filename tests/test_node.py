@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 
+from PIL import Image
 import torch
 
 from . import context
@@ -41,9 +42,10 @@ class NodeRun(unittest.TestCase):
     def tearDownClass(cls):
         cls.temp.cleanup()
 
-    def run_node(self, source, moge, frames, path, camera_path=None, markers=False, fps=24.0):
+    def run_node(self, source, moge, frames, path, camera_path=None, markers=False, fps=24.0,
+                 prune=True, quality="Medium (512)"):
         """Calls the node the way ComfyUI would, and returns {"result", "ui"}."""
-        output = self.node.execute(source, moge, frames, fps, markers, path, camera_path)
+        output = self.node.execute(source, moge, frames, fps, markers, prune, quality, path, camera_path)
         return {"result": output.result, "ui": output.ui}
 
     def test_v3_entry_point_exposes_the_node(self):
@@ -55,10 +57,13 @@ class NodeRun(unittest.TestCase):
     def test_schema_is_valid(self):
         self.assertEqual(self.schema.node_id, "CameraPath_Video")
         self.assertEqual([i.id for i in self.schema.inputs],
-                         ["source", "moge_geometry", "frame_count", "fps", "markers", "keyframes",
+                         ["source", "moge_geometry", "frame_count", "fps", "markers",
+                          "prune_depth_edges", "preview_quality", "keyframes",
                           "camera_path"])
         count, rate = (next(i for i in self.schema.inputs if i.id == name) for name in ("frame_count", "fps"))
         self.assertEqual((count.default, rate.default), (120, 24.0))
+        self.assertTrue(next(i for i in self.schema.inputs if i.id == "prune_depth_edges").default)
+        self.assertEqual(next(i for i in self.schema.inputs if i.id == "preview_quality").default, "Medium (512)")
         seed = next(i for i in self.schema.inputs if i.id == "camera_path")
         # Socket only, so it gets a connection dot rather than a box in the node.
         self.assertTrue(seed.force_input)
@@ -127,12 +132,42 @@ class NodeRun(unittest.TestCase):
         self.assertEqual(data["frame_count"], 5)
         self.assertEqual(data["path"]["camera"][0]["frame"], 0)
         cache = data["preview"]
+        self.assertTrue(cache["prune_depth_edges"])
+        self.assertEqual(cache["quality"], "Medium (512)")
+        self.assertEqual(cache["levels"], context.preview.PREVIEW_LEVELS)
         self.assertEqual([sample["frame"] for sample in cache["samples"]], [0, 1, 2])
         self.assertAlmostEqual(cache["fx"], FX / WIDTH, places=6)
         self.assertAlmostEqual(cache["pivot_z"], 2.0, places=5)
         for sample in cache["samples"]:
             for reference in (sample["rgb"], sample["z"]):
                 self.assertTrue(os.path.exists(os.path.join(self.temp.name, reference["filename"])))
+
+    def test_pruning_opens_mask_holes_at_depth_edges(self):
+        source = torch.ones(1, 16, 1024, 3)
+        moge = geometry(torch.tensor([2.0]), size=(1024, 16))
+        moge["points"][:, :, 512:] *= 3
+        plain = self.run_node(source, moge, 1, '[{"frame": 0}]', prune=False, quality="Low (384)")
+        pruned = self.run_node(source, moge, 1, '[{"frame": 0}]', prune=True)
+        self.assertFalse(bool(plain["result"][2].any()))
+        self.assertTrue(bool(pruned["result"][2].any()))
+        self.assertEqual(plain["result"][0].shape, pruned["result"][0].shape)
+        cached = []
+        for output in (plain, pruned):
+            meta = json.loads(output["ui"]["camera_path"][0])["preview"]
+            self.assertEqual(meta["width"], 768)
+            with Image.open(os.path.join(self.temp.name, meta["samples"][0]["z"]["filename"])) as image:
+                cached.append(image.tobytes())
+        self.assertEqual(cached[0], cached[1])
+
+    def test_quality_does_not_change_output_resolution_or_pixels(self):
+        source = torch.rand(1, HEIGHT, WIDTH, 3)
+        for quality in context.preview.PREVIEW_LEVELS:
+            output = self.run_node(source, geometry(torch.tensor([2.0])), 1, '[{"frame": 0}]',
+                                   prune=False, quality=quality)
+            self.assertTrue(torch.equal(output["result"][0], source))
+            meta = json.loads(output["ui"]["camera_path"][0])["preview"]
+            self.assertFalse(meta["prune_depth_edges"])
+            self.assertEqual(meta["quality"], quality)
 
     def test_markers_burn_the_lattice_into_the_video(self):
         source = torch.zeros(1, HEIGHT, WIDTH, 3)

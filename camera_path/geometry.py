@@ -23,6 +23,24 @@ from . import render
 logger = logging.getLogger("camerapath.geometry")
 
 
+def prune_edges(depth: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+    """Keep depth-continuous points at a fixed 512-long-side inspection scale."""
+    height, width = depth.shape
+    size = tuple(max(3, round(n * 512 / max(height, width))) for n in (height, width))
+    resize = torch.nn.functional.interpolate
+    pool = torch.nn.functional.max_pool2d
+    z = resize(depth[None, None], size=size, mode="nearest")
+    mask = resize(valid[None, None].float(), size=size, mode="nearest") > 0.5
+    mask = mask & torch.isfinite(z) & (z > 0)
+    maximum = pool(torch.where(mask, z, torch.inf), 3, stride=1, padding=1)
+    minimum = -pool(torch.where(mask, -z, torch.inf), 3, stride=1, padding=1)
+    relative = (maximum - minimum) / z.abs().clamp_min(1e-6)
+    keep = mask & torch.isfinite(relative) & (relative <= 0.30)
+    # All contributing neighbours must survive; do not interpolate edges back in.
+    keep = resize(keep.float(), size=(height, width), mode="bilinear", align_corners=False)[0, 0] > 0.999
+    return keep & valid & torch.isfinite(depth) & (depth > 0)
+
+
 class Geometry:
     """MoGe point maps resampled to the source resolution, one frame at a time."""
 

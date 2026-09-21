@@ -16,7 +16,7 @@ import folder_paths
 from comfy_api.latest import io
 
 from ..camera_path import preview, render, trajectory
-from ..camera_path.geometry import Geometry
+from ..camera_path.geometry import Geometry, prune_edges
 
 logger = logging.getLogger("camerapath.nodes.camera_path_video")
 
@@ -86,6 +86,16 @@ class CameraPathVideo(io.ComfyNode):
                             "the scene with the geometry, so a downstream model can read the "
                             "parallax from them. The editor shows them while this is on.",
                 ),
+                io.Boolean.Input(
+                    "prune_depth_edges", default=True,
+                    tooltip="Remove depth-edge streaks, trading them for holes in video_mask. "
+                            "The preview updates immediately; run again to update the video.",
+                ),
+                io.Combo.Input(
+                    "preview_quality", options=list(preview.PREVIEW_LEVELS), default="Medium (512)",
+                    tooltip="Editor preview detail only. Higher levels cost more while dragging. "
+                            "Updates immediately from the cache; output resolution is unchanged.",
+                ),
                 # Written by the editor and hidden from the node body by js/camera-path.js.
                 # It is still a real widget so the authored path is saved with the workflow.
                 io.String.Input(
@@ -113,13 +123,13 @@ class CameraPathVideo(io.ComfyNode):
                 ),
                 io.Mask.Output(
                     display_name="video_mask",
-                    tooltip="1 where the virtual camera sees a region the source camera never did.",
+                    tooltip="1 wherever no point was reprojected, including depth-pruning holes.",
                 ),
             ],
         )
 
     @classmethod
-    def execute(cls, source, moge_geometry, frame_count, fps, markers, keyframes,
+    def execute(cls, source, moge_geometry, frame_count, fps, markers, prune_depth_edges, preview_quality, keyframes,
                 camera_path=None) -> io.NodeOutput:
         path = trajectory.parse_path(keyframes)
         # fps is the editor's timeline rate only: the output is a plain image batch and
@@ -154,6 +164,8 @@ class CameraPathVideo(io.ComfyNode):
             if sources[index] != cached:
                 cached, cloud = sources[index], None  # drop the old cloud before building the next
                 points, valid = geometry.frame(cached)
+                if prune_depth_edges:
+                    valid = prune_edges(points[..., 2], valid)
                 cloud = render.PointCloud.from_frame(points.to(device), valid.to(device),
                                                      source[cached].to(device))
                 if lattice is not None:
@@ -170,7 +182,7 @@ class CameraPathVideo(io.ComfyNode):
             "frame_count": count,
             "markers": bool(markers),
             "input_path": cls._seed(camera_path),
-            "preview": cls._preview(source, geometry, sources, lens, unit),
+            "preview": cls._preview(source, geometry, sources, lens, unit, prune_depth_edges, preview_quality),
         }
         return io.NodeOutput(video, trajectory.dumps(path), holes,
                              ui={"camera_path": [json.dumps(editor)]})
@@ -192,7 +204,7 @@ class CameraPathVideo(io.ComfyNode):
             return None
 
     @classmethod
-    def _preview(cls, source, geometry, sources, lens, pivot):
+    def _preview(cls, source, geometry, sources, lens, pivot, prune_depth_edges, preview_quality):
         """Cache the point cloud for the editor's 3D view.
 
         ``pivot`` is the automatic pivot depth; the editor scales pivot positions by it.
@@ -205,11 +217,13 @@ class CameraPathVideo(io.ComfyNode):
             samples = []
             for index in preview.sample_frames(sources):
                 points, valid = geometry.frame(index)
-                samples.append((index, source[index], points[..., 2], valid))
+                keep = prune_edges(points[..., 2], valid)
+                samples.append((index, source[index], points[..., 2], valid, keep))
             return preview.write(samples, folder_paths.get_temp_directory(), {
                 "source_width": width, "source_height": height,
                 "fx": fx / width, "fy": fy / height, "cx": cx / width, "cy": cy / height,
-                "pivot_z": pivot, "splat": SPLAT,
+                "pivot_z": pivot, "splat": SPLAT, "prune_depth_edges": bool(prune_depth_edges),
+                "quality": preview_quality,
             })
         except Exception:
             logger.exception("could not write the editor preview")

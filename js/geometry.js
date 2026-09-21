@@ -403,9 +403,10 @@ export function renderCamera(cloud, camera, lens, target, splat) {
  * @param {{data: Uint8ClampedArray, width: number, height: number, depth: Float32Array}} target Output buffer.
  * @param {number} pivotZ Orbit centre depth.
  * @param {number} stride Draw every nth point.
+ * @param {number} radius Scene-only splat radius in device pixels.
  * @returns {void}
  */
-export function renderScene(cloud, view, target, pivotZ, stride) {
+export function renderScene(cloud, view, target, pivotZ, stride, radius = 0) {
   const { data, width, height, depth } = target;
   const { yaw, pitch, scale, originX, originY, upright } = view;
   const [ox, oy, oz] = view.centre ?? [0, 0, 0];
@@ -426,14 +427,18 @@ export function renderScene(cloud, view, target, pivotZ, stride) {
     const rx = ex * cy - ez * sy, rz = ex * sy + ez * cy;
     const d = ey * sp + rz * cp;
     const px = (originX + rx * scale) | 0, py = (originY - (ey * cp - rz * sp) * scale) | 0;
-    if (px < 0 || px >= width || py < 0 || py >= height) continue;
-    const t = py * width + px;
-    if (d >= depth[t]) continue;
-    depth[t] = d;
-    data[t * 4] = cloud.color[k * 3];
-    data[t * 4 + 1] = cloud.color[k * 3 + 1];
-    data[t * 4 + 2] = cloud.color[k * 3 + 2];
-    data[t * 4 + 3] = 255;
+    for (let dy = -radius; dy <= radius; dy++) for (let dx = -radius; dx <= radius; dx++) {
+      if (dx * dx + dy * dy > radius * radius) continue;
+      const x = px + dx, y = py + dy;
+      if (x < 0 || x >= width || y < 0 || y >= height) continue;
+      const t = y * width + x, biased = d + 1e-4 * (dx * dx + dy * dy);
+      if (biased >= depth[t]) continue;
+      depth[t] = biased;
+      data[t * 4] = cloud.color[k * 3];
+      data[t * 4 + 1] = cloud.color[k * 3 + 1];
+      data[t * 4 + 2] = cloud.color[k * 3 + 2];
+      data[t * 4 + 3] = 255;
+    }
   }
 }
 

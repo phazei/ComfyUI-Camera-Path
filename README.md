@@ -25,6 +25,8 @@ MoGe geometry comes from the native nodes in `image/geometry estimation`:
 | `frame_count` | `INT` | Number of output frames. Defaults to 120. |
 | `fps` | `FLOAT` | Rate the editor's timeline and playback run at. Defaults to 24 and does not change what is rendered. |
 | `markers` | `BOOLEAN` | Burn a lattice of small coloured spheres into the video. Off by default. |
+| `prune_depth_edges` | `BOOLEAN` | Remove points crossing depth discontinuities. On by default; trades streaks for holes. Preview updates immediately; rerun to update the output video. |
+| `preview_quality` | `COMBO` | Low (384), Medium (512, default), High (768): displayed preview long side, capped by source size. Updates immediately. Output resolution is unchanged. |
 | `keyframes` | `STRING` | Keyframes as JSON. The editor writes it, and it is hidden from the node body — the `camera_path` output carries the same JSON. |
 | `camera_path` | `STRING` | Optional, connection only. A path from another node. |
 
@@ -44,13 +46,23 @@ subject hides the ones behind it, the near ones pass in front, and each keeps it
 own colour through the move — so a downstream video model gets an unambiguous read
 on the parallax. The editor shows them in both views while the box is ticked.
 
+Higher preview quality retains more points in the path view, at the cost of slower CPU
+redraws. Path-view points grow with zoom, capped at a 3 CSS-pixel radius to avoid chunky
+blocks. This does not change the video renderer's splat size. Pruning is computed before
+preview downsampling, so every quality level uses the same source-resolution validity mask.
+
+Each run caches up to eight unpruned samples at High quality, plus their pruning masks.
+Changing pruning or quality rebuilds the displayed cloud locally, without another run or
+download. Low still reduces redraw work, but no longer reduces the cache size. After
+upgrading from the older, pruned-only cache, run the node once to enable live comparisons.
+
 ## Outputs
 
 | output | type | notes |
 | --- | --- | --- |
 | `camera_video` | `IMAGE` | `[frame_count, height, width, 3]`, matching the source resolution. |
 | `camera_path` | `STRING` | The keyframes that were rendered; route it on, or into another node's `camera_path`. |
-| `video_mask` | `MASK` | 1 where the virtual camera sees something the source camera never did. |
+| `video_mask` | `MASK` | 1 wherever no point was reprojected, including holes left by depth-edge pruning. |
 
 ## Camera path format
 
@@ -109,7 +121,7 @@ or change the floor's orientation. The pivot's forward tick shows the heading.
 
 All axes are optional and default to a camera one unit behind its pivot, inheriting
 the pivot's tilt and roll. **Snap to auto** on the pivot plus **Reset key** on the
-camera reproduces the input image exactly. Moving or straightening the pivot moves
+camera reproduces the input camera alignment (with pruning off, the input image). Moving or straightening the pivot moves
 its cameras too: keep the starting pivot at auto and add another for an offset
 destination if the first frame should stay unchanged. Between keyframes each axis is
 interpolated with a monotone cubic (PCHIP) curve: keyframes are hit exactly and

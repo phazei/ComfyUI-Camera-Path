@@ -9,6 +9,7 @@ const { window } = dom;
 // jsdom has no 2D canvas. A recording stub is enough to prove the drawing code runs.
 const calls = new Set();
 window.HTMLCanvasElement.prototype.getContext = function () {
+  let drawn;
   const record = name => (...ignored) => { calls.add(name); };
   const data = (w, h) => ({ data: new window.Uint8ClampedArray(w * h * 4), width: w, height: h });
   return {
@@ -16,8 +17,17 @@ window.HTMLCanvasElement.prototype.getContext = function () {
     setTransform: record('setTransform'), fillRect: record('fillRect'), clearRect: record('clearRect'),
     beginPath: record('beginPath'), moveTo: record('moveTo'), lineTo: record('lineTo'),
     stroke: record('stroke'), arc: record('arc'), fill: record('fill'), fillText: record('fillText'),
-    drawImage: record('drawImage'), putImageData: record('putImageData'),
-    createImageData: data, getImageData: (x, y, w, h) => data(w, h),
+    drawImage: image => { drawn = image; calls.add('drawImage'); }, putImageData: record('putImageData'),
+    createImageData: data, getImageData: (x, y, w, h) => {
+      const image = data(w, h);
+      if (drawn?.src?.includes('z.png')) {
+        for (let i = 0; i < w * h; i++) {
+          const column = i % w;
+          image.data[i * 4 + 2] = column < w / 4 ? 127 : column >= w - 8 ? 255 : 0;
+        }
+      }
+      return image;
+    },
   };
 };
 for (const [name, value] of Object.entries({ clientWidth: 400, clientHeight: 300 })) {
@@ -37,9 +47,10 @@ window.ResizeObserver = class {
   observe(target) { target.resize = this.callback; }
   disconnect() {}
 };
+let imageLoads = 0, decodeWait = null;
 window.Image = class {
-  constructor() { this.naturalWidth = 64; this.naturalHeight = 48; }
-  async decode() {}
+  constructor() { this.naturalWidth = 768; this.naturalHeight = 576; }
+  async decode() { imageLoads++; if (decodeWait) await decodeWait; }
 };
 const clock = { now: () => Date.now() };
 window.requestAnimationFrame = callback => window.setTimeout(() => callback(clock.now()), 16);
@@ -57,8 +68,24 @@ let confirmAnswer = true;
 globalThis.confirm = () => confirmAnswer;
 
 const { createCameraEditor, spreadMarkers } = await import(new URL('../js/editor.js', import.meta.url));
-const { cameraScenePosition, dragOrbit, dragTruck, uprightRotation } = await import(new URL('../js/geometry.js', import.meta.url));
+const { cameraScenePosition, dragOrbit, dragTruck, uprightRotation, renderScene } = await import(new URL('../js/geometry.js', import.meta.url));
+
+// Scene splats grow without giving up clipping or depth occlusion.
+{
+  const target = { width: 9, height: 9, data: new Uint8ClampedArray(9 * 9 * 4), depth: new Float32Array(81) };
+  const cloud = { count: 1, x: [0], y: [0], z: [1], color: [255, 0, 0] };
+  const view = { yaw: 0, pitch: 0, scale: 100, originX: 4, originY: 4 };
+  target.depth.fill(Infinity);
+  renderScene(cloud, view, target, 1, 1, 2);
+  if (target.data.filter((v, i) => i % 4 === 3 && v).length !== 13) throw Error('scene splat footprint');
+  cloud.z = [0.5]; cloud.color = [0, 255, 0];
+  renderScene(cloud, view, target, 1, 1, 2);
+  if (target.data[(4 * 9 + 4) * 4] !== 255) throw Error('scene splat occlusion');
+  view.originX = -1;
+  renderScene(cloud, view, target, 1, 1, 2);
+}
 const { poseAt } = await import(new URL('../js/interpolate.js', import.meta.url));
+const { loadPreview, createPreview } = await import(new URL('../js/preview.js', import.meta.url));
 
 let stored = JSON.stringify([
   { frame: 0, azimuth: 0, elevation: 0, distance: 1, lateral: 0, height: 0 },
@@ -66,12 +93,15 @@ let stored = JSON.stringify([
 ]);
 let markers = false;
 let fps = 24;
+let prune = true, quality = 'Medium (512)';
 const editor = createCameraEditor({
   readPath: () => stored,
   writePath: value => { stored = value; },
   readFrameCount: () => 49,
   readFps: () => fps,
   readMarkers: () => markers,
+  readPrune: () => prune,
+  readQuality: () => quality,
 });
 window.document.body.append(editor.element);
 
@@ -487,11 +517,26 @@ check('without cached geometry the placeholder stands in and says so',
       /placeholder/.test(element.querySelector('.render .label').textContent)
       && calls.has('putImageData'));
 
-await editor.setPreview({
-  width: 64, height: 48, source_width: 640, source_height: 480,
+const cacheMeta = {
+  width: 768, height: 576, source_width: 1024, source_height: 768,
+  levels: { 'Low (384)': 384, 'Medium (512)': 512, 'High (768)': 768 },
   fx: 0.9, fy: 1.2, cx: 0.5, cy: 0.5, pivot_z: 2.0, splat: 1, z_low: 1.5, z_high: 3.5,
   samples: [{ frame: 0, rgb: { filename: 'rgb.png', type: 'temp' }, z: { filename: 'z.png', type: 'temp' } }],
-}, reference => `http://localhost/view?filename=${reference.filename}`);
+};
+const urlFor = reference => `http://localhost/view?filename=${reference.filename}`;
+await editor.setPreview({ ...cacheMeta, levels: undefined }, urlFor);
+check('old pruned-only caches request a one-time rerun', /Run the node once/.test(element.querySelector('.status').textContent));
+{
+  const cache = await loadPreview(cacheMeta, urlFor);
+  const full = createPreview(cache, 'High (768)', false);
+  const low = createPreview(cache, 'Low (384)', false);
+  const pruned = createPreview(cache, 'High (768)', true);
+  check('invalid points stay invalid with pruning off', full.samples[0].cloud.count === (768 - 8) * 576);
+  check('High actually has four times the Low point density', full.samples[0].cloud.count === low.samples[0].cloud.count * 4);
+  check('the cached mask, not a second edge pass, selects points', pruned.samples[0].cloud.count === (768 - 8 - 192) * 576);
+  check('comparison does not mutate the raw cache', Number.isFinite(cache.samples[0].depth[0]) && cache.samples[0].keep[0] === 0);
+}
+await editor.setPreview(cacheMeta, urlFor);
 check('the cached cloud is loaded and reprojected',
       /unseen/.test(element.querySelector('.render .label').textContent));
 check('the scene view draws the cloud as well', calls.has('putImageData'));
@@ -499,6 +544,38 @@ check('the scene view draws the cloud as well', calls.has('putImageData'));
 // The lattice hangs in front of the wall as well as behind it, so switching it on
 // covers pixels that were holes before.
 const unseen = () => Number(/(\d+)% unseen/.exec(element.querySelector('.render .label').textContent)[1]);
+editor.loadPath([{ frame: 0 }]);
+const loads = imageLoads;
+for (const [level, dimensions] of [['Low (384)', '384\u00d7288'], ['High (768)', '768\u00d7576'],
+                                   ['Medium (512)', '512\u00d7384']]) {
+  quality = level;
+  editor.sync();
+  check(`quality changes locally to ${level}`, element.querySelector('.render .label').textContent.includes(dimensions));
+  const pruned = unseen();
+  prune = false;
+  editor.sync();
+  check(`pruning off restores points at ${level}`, unseen() < pruned);
+  prune = true;
+  editor.sync();
+  check(`pruning on restores the comparison at ${level}`, unseen() === pruned);
+}
+check('live settings do not fetch any images', imageLoads === loads);
+
+// A setting changed during loading must win over the settings at load start.
+let release;
+decodeWait = new Promise(resolve => { release = resolve; });
+const loading = editor.setPreview(cacheMeta, urlFor);
+quality = 'Low (384)'; prune = false;
+editor.sync();
+release();
+await loading;
+decodeWait = null;
+check('loading uses the latest widget settings', element.querySelector('.render .label').textContent.includes('384\u00d7288'));
+const unpruned = unseen();
+prune = true;
+editor.sync();
+check('latest pruning setting was also used during loading', unseen() > unpruned);
+
 editor.loadPath([{ frame: 0, azimuth: 40 }]);
 const before = unseen();
 markers = true;
