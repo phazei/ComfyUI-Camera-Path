@@ -98,7 +98,13 @@ dropdown picks the pivot it blends towards. At 0% it uses its primary
 pivot; at 100% it uses the destination pivot's position and orientation. The target
 is stored explicitly, so adding another camera does not silently retarget an existing
 blend. A missing target is initially inferred from the next distinct camera pivot.
-Changing the primary pivot starts an unblended attachment; it does not preserve the shot.
+Changing the primary pivot starts an unblended attachment. It leaves the camera where its
+new pivot puts it unless **Keep shot** is ticked, in which case the axes are solved to hold
+the camera still: truck, boom and dolly fold into the orbit, lock is released, and the
+status line reports `estimated`, or `approximate` if an axis limit stopped it landing
+exactly. Only that keyframe is held — the frames around it interpolate around the new
+pivot, so the motion through it still changes. The tick is a tool setting, not part of the
+path, and starts clear each session.
 
 **Add keyframe** captures the current camera settings and two-pivot blend, keeping
 the preceding camera's primary pivot. Repeated insertion within that handoff preserves
@@ -187,7 +193,10 @@ still be dragged to edit that camera. **Reset key** also clears the pivot blend 
 Drag clockwise around the azimuth dial to increase the orbit angle. It accumulates
 across full turns within the existing -720 to +720 degree range. Its centre value
 is editable; double-click it to zero azimuth. Drag the aim puck right/up for
-positive pan/tilt, or edit the numbers beside it. **Recentre** zeros pan/tilt only,
+positive pan/tilt, or edit the numbers beside it. The puck covers a quarter turn each
+way; the numbers reach a half turn, so an aim can be sent behind the camera by typing
+it. Past the puck's range the mark parks on the rim, and dragging it again pulls the
+value back inside. **Recentre** zeros pan/tilt only,
 leaving camera roll unchanged. Both circles are 68px across.
 
 **Dolly** moves straight along the camera's final viewing direction, after pan/tilt,

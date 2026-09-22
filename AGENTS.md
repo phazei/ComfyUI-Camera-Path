@@ -183,6 +183,12 @@ Version 2 is an object; a bare array of camera keyframes is version 1 and still 
   boom, dolly and lock zeroed because they are redundant there. It is exact to floating
   point unless an axis limit clamps; the notice then says `approximate`. No stored
   multi-pivot weights, no automatically created pivots, and insertion is never refused.
+- Changing a camera's primary pivot re-solves its axes through the same `editor.fitPose`
+  when **Keep shot** is ticked, so the camera holds still while its numbers change. The
+  maintainer asked for it once `solvePose` existed; the earlier decision was that pivot
+  reassignment never preserved the pose. Lock cannot survive — it is a behaviour, not a
+  pose, so a held camera comes back unlocked and stops following its pivot. The checkbox is
+  editor-local and resets with the page.
 - Insertion preserves the sampled shot within serialization precision, not the entire
   surrounding curve: automatic slopes are recalculated. Explicit targets survive
   neighbouring insertions/reordering and count as references when protecting pivot deletion.
@@ -242,7 +248,12 @@ pivot's frame rather than the image's.
 
 `pan`, `tilt` and `roll` are applied by `render.aim` *after* the look-at, as a rotation of
 the camera basis about its own axes. They do not move the camera, only turn it, so they
-compose with everything above. The puck's Recentre zeros pan/tilt only; roll has numeric
+compose with everything above. `FIELDS` allows pan and tilt +-180 while the puck's surface
+only maps +-90, so the extra half is reachable by typing and a dragged puck rewrites a
+typed value back into its own range; `refresh` clamps the mark to the rim so it cannot be
+drawn outside the circle. The wider limit also lets `solvePose` land a fit that needs to
+look backwards, which used to clamp and report `approximate`. The puck's Recentre zeros
+pan/tilt only; roll has numeric
 entry and Reset key clears all camera axes. There is no separate Reset aim button.
 
 `dolly` is applied last: `eye += forward * dolly * unit`, using the final aimed forward

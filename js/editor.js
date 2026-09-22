@@ -39,8 +39,9 @@ const FIELDS = [
   { name: 'dolly', label: 'Dolly \u00d7', min: -3, max: 3, step: 0.01 },
   { name: 'lateral', label: 'Lateral \u00d7', min: -3, max: 3, step: 0.01 },
   { name: 'height', label: 'Height \u00d7', min: -3, max: 3, step: 0.01 },
-  { name: 'pan', label: 'Pan \u00b0', min: -90, max: 90, step: 1 },
-  { name: 'tilt', label: 'Tilt \u00b0', min: -90, max: 90, step: 1 },
+  // The puck spans a quarter turn each way; typing reaches the half turn behind the camera.
+  { name: 'pan', label: 'Pan \u00b0', min: -180, max: 180, step: 1 },
+  { name: 'tilt', label: 'Tilt \u00b0', min: -180, max: 180, step: 1 },
   { name: 'roll', label: 'Roll \u00b0', min: -180, max: 180, step: 1 },
 ];
 const DISTANCE = FIELDS.find(field => field.name === 'distance');
@@ -179,6 +180,9 @@ const STYLE = `
   font:13px ui-monospace,monospace;padding:3px 4px;text-align:right}
 .cpath .field select{min-width:0;font-size:13px;padding:3px 4px}
 .cpath .field select[data-role=pivot]{flex:1 1 auto}
+.cpath .field .hold{display:flex;align-items:center;gap:5px;cursor:pointer;flex:0 0 auto}
+.cpath .group .field .hold span{width:auto;color:#c7c0d8}
+.cpath .field .hold input{accent-color:#7f5cff;width:16px;height:16px;margin:0}
 .cpath .field select[data-role=pivot-target]{flex:0 1 auto;max-width:98px}
 .cpath .field.lock{cursor:pointer}
 /* The checkbox has no number box to line up with, so it follows the right edge instead. */
@@ -450,10 +454,19 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
   const pivotSelect = document.createElement('select');
   pivotSelect.dataset.role = 'pivot';
   pivotSelect.title = 'The pivot this keyframe orbits around';
-  const pivotRow = document.createElement('label');
+  // A div, not a label: it holds two controls, and a label may only speak for one.
+  const pivotRow = document.createElement('div');
   pivotRow.className = 'field';
   pivotRow.innerHTML = '<span>Orbits</span>';
   pivotRow.append(pivotSelect);
+  const holdBox = document.createElement('label');
+  holdBox.className = 'hold';
+  holdBox.title = 'Keep this camera where it is when its pivot changes, by solving its axes '
+                + 'against the new pivot. Truck, boom and dolly fold into the orbit and lock is '
+                + 'released, so the settings change even though the shot does not.';
+  holdBox.innerHTML = '<input type="checkbox" data-role="hold-pose"><span>Keep shot</span>';
+  const holdInput = holdBox.querySelector('input');
+  pivotRow.append(holdBox);
   pivotStack.append(pivotRow);
 
   const blendField = buildField(pivotStack,
@@ -490,6 +503,10 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
 
   pivotSelect.addEventListener('change', () => {
     if (!key()) return;
+    // Captured before anything moves: what the shot is, if it has to be kept.
+    const frame = key().frame;
+    const wanted = holdInput.checked ? poseCamera(poseAt(path, frame), unit()) : null;
+    const reference = { azimuth: key().azimuth, elevation: key().elevation };
     key().pivot = pivotSelect.value;
     key().pivot_blend = 0;
     key().pivot_target = path.camera.slice(selected + 1).find(item => item.pivot !== key().pivot)?.pivot ?? key().pivot;
@@ -499,7 +516,9 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
         item.pivot_target = path.camera.slice(index + 1).find(next => next.pivot !== item.pivot)?.pivot ?? item.pivot;
       }
     });
+    if (wanted) Object.assign(key(), fitPose(wanted, key().pivot, frame, reference));
     commit();
+    setNotice(wanted ? poseNotice(wanted, frame, 'Moved to') : '');
     refresh();
   });
   targetSelect.addEventListener('change', () => {
@@ -679,27 +698,40 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
     const previous = [...path.camera].reverse().find(item => item.frame < frame) ?? path.camera[0];
     const heading = (previous.pivot_blend ?? 0) > 0 && previous.pivot_target !== previous.pivot
       ? previous.pivot_target : previous.pivot;
-    const limit = (name, value) => {
-      const spec = FIELDS.find(field => field.name === name);
-      return spec ? clamp(value, spec.min, spec.max) : value;
-    };
-    const solved = solvePose(wanted, pivotAt(pivotOf(heading), frame), unit(), pose, limit);
+    const solved = fitPose(wanted, heading, frame, pose);
     return { frame, pivot: heading, pivot_target: heading, pivot_blend: 0, ...solved };
   }
 
   /**
-   * How well an estimated keyframe reproduces the camera it was fitted to.
-   * @param {object} wanted Camera basis the insertion was aiming at.
+   * Solves every camera axis to reproduce a camera basis around one pivot.
+   * @param {object} wanted Camera basis to match.
+   * @param {string} identifier Pivot to attach to.
+   * @param {number} frame Frame the pivot is resolved at.
+   * @param {object} reference Pose the solve starts from, for branch choice and unwrapping.
+   * @returns {object} Every camera axis, clamped to its UI range.
+   */
+  function fitPose(wanted, identifier, frame, reference) {
+    const limit = (name, value) => {
+      const spec = FIELDS.find(field => field.name === name);
+      return spec ? clamp(value, spec.min, spec.max) : value;
+    };
+    return solvePose(wanted, pivotAt(pivotOf(identifier), frame), unit(), reference, limit);
+  }
+
+  /**
+   * How well the path now reproduces the camera a fit was aiming at.
+   * @param {object} wanted Camera basis that was being matched.
    * @param {number} frame Output frame.
+   * @param {string} verb What was done to the keyframe, for the message.
    * @returns {string} Status notice.
    */
-  function estimateNotice(wanted, frame) {
+  function poseNotice(wanted, frame, verb) {
     const got = poseCamera(poseAt(path, frame), unit());
     const off = Math.hypot(...[0, 1, 2].map(i => got.eye[i] - wanted.eye[i])) > 0.01 * unit()
       || ['right', 'down', 'forward'].some(name =>
         [0, 1, 2].reduce((total, i) => total + got[name][i] * wanted[name][i], 0) < 0.9999);
     const index = path.pivots.findIndex(pivot => pivot.id === key().pivot);
-    return `Added on pivot ${index + 1}; pose ${off ? 'approximate' : 'estimated'}.`;
+    return `${verb} pivot ${index + 1}; pose ${off ? 'approximate' : 'estimated'}.`;
   }
 
   /**
@@ -1040,7 +1072,8 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
       const angle = key().azimuth * Math.PI / 180;
       orbitDial.mark.style.left = `${50 + Math.sin(angle) * 43}%`;
       orbitDial.mark.style.top = `${50 - Math.cos(angle) * 43}%`;
-      const x = key().pan / 90, y = key().tilt / 90;
+      // An aim typed past the puck's quarter turn parks the mark on the rim it left.
+      const x = clamp(key().pan / 90, -1, 1), y = clamp(key().tilt / 90, -1, 1);
       const radius = Math.hypot(x, y);
       const scale = radius ? Math.max(Math.abs(x), Math.abs(y)) / radius : 0;
       aimPuck.mark.style.left = `${50 + x * scale * 40}%`;
@@ -1322,7 +1355,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
       selectedPivot = -1;
       heldViewPivot = null;
       commit();
-      setNotice(exact ? '' : estimateNotice(wanted, frame));
+      setNotice(exact ? '' : poseNotice(wanted, frame, 'Added on'));
     }
     if (action === 'remove' && selected >= 0 && path.camera.length > 1) {
       heldViewPivot = { ...viewPivot() };

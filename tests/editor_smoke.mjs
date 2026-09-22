@@ -230,6 +230,14 @@ check('puck display round-trips its aim and losing capture stops edits', path()[
 aimNumber('Tilt').value = '-23';
 aimNumber('Tilt').dispatchEvent(new window.Event('input', { bubbles: true }));
 check('aim keeps precise numeric entry', path()[0].tilt === -23);
+aimNumber('Pan').value = '150';
+aimNumber('Pan').dispatchEvent(new window.Event('input', { bubbles: true }));
+check('typing reaches the half turn the puck cannot, parking the mark on its rim',
+      path()[0].pan === 150
+      && Math.abs(parseFloat(puck.querySelector('i').style.left) - 50) <= 40
+      && Math.abs(parseFloat(puck.querySelector('i').style.top) - 50) <= 40);
+aimNumber('Pan').value = '0';
+aimNumber('Pan').dispatchEvent(new window.Event('input', { bubbles: true }));
 click('recentre-aim');
 check('puck recentre leaves roll and orbit alone',
       path()[0].pan === 0 && path()[0].tilt === 0 && path()[0].roll === 12 && path()[0].azimuth === 0);
@@ -363,6 +371,34 @@ const trackX = (fraction) => 30 + fraction * 400 * ZOOM;
     bubbles: true, altKey: true, deltaY: 50,
   }));
   check('distance gesture cannot edit a camera after deletion cleared selection', stored === afterDelete);
+
+  // Keep shot re-solves the camera around its new pivot instead of letting it jump.
+  const reattach = JSON.stringify({ pivots: fixture.pivots, camera: [
+    { frame: 0, pivot: 'a', azimuth: 35, elevation: 12, distance: 1.3,
+      lateral: 0.2, height: -0.15, dolly: 0.1, pan: 6, tilt: -4, roll: 9 },
+    { frame: 48, pivot: 'a', azimuth: 60 }] });
+  const hold = element.querySelector('[data-role=hold-pose]');
+  const pick = element.querySelector('[data-role=pivot]');
+  const reassign = keep => {
+    editor.loadPath(JSON.parse(reattach));
+    const was = poseCamera(poseAt(JSON.parse(stored), 0), 1);
+    hold.checked = keep;
+    pick.value = 'b';
+    pick.dispatchEvent(new window.Event('change', { bubbles: true }));
+    return [was, poseCamera(poseAt(JSON.parse(stored), 0), 1)];
+  };
+  const [was, moved] = reassign(false);
+  check('changing pivot leaves the camera behind by default',
+        path()[0].pivot === 'b' && path()[0].azimuth === 35
+        && moved.eye.some((value, i) => Math.abs(value - was.eye[i]) > 0.05));
+  const [, kept] = reassign(true);
+  check('keep shot re-solves the axes so the camera stays where it was',
+        path()[0].pivot === 'b' && path()[0].azimuth !== 35
+        && path()[0].lateral === 0 && path()[0].height === 0 && path()[0].dolly === 0
+        && ['eye', 'right', 'down', 'forward'].every(name =>
+          kept[name].every((value, i) => Math.abs(value - was[name][i]) < 0.005)));
+  check('and the notice names the pivot it was moved to',
+        /^Moved to pivot 2; pose (estimated|approximate)\.$/.test(element.querySelector('.status').textContent));
   editor.loadPath(JSON.parse(saved));
 }
 pointer(track, 'pointerdown', trackX(0.5));
