@@ -8,6 +8,17 @@ in the node's 3D editor, and it renders the scene from those virtual camera
 positions. The result is a plain `IMAGE` batch, so it drops into any workflow that
 takes a control or reference video.
 
+
+
+https://github.com/user-attachments/assets/3792370a-19e8-481f-996f-c322da0f1f85
+
+
+<video src="media/CameraPathDemo.mp4" controls muted loop width="100%"></video>
+
+[Watch the demo](media/CameraPathDemo.mp4) if the player above does not load.
+
+![The node wired to Load MoGe Model and Run MoGe Inference](media/CameraPathWorkflowPic.png)
+
 ## Install
 
 Clone into `ComfyUI/custom_nodes/` and restart ComfyUI. There are no extra
