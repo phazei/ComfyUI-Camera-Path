@@ -326,6 +326,21 @@ drawn **and hit tested**; its `point` is where it really is. Consequences worth 
   true position even when the keyframe disc for that frame has been nudged aside.
   It only edits the selected key when the playhead is exactly at that key. Between keys
   clicking it is informational, never a seek to the selected camera elsewhere.
+- The camera panel is four `fieldset.group`s — Orbit, Aim, Position, Pivot — built by
+  `editor.buildGroup`, each holding an optional round control and a `.stack` of rows. The
+  **group** is what responds to width: `.group .body` wraps, so a puck's axes sit beside it
+  when the group is wide enough and underneath it when not, and no individual control needs
+  a breakpoint. `min-width:0` on `.group` is load-bearing — a fieldset's default
+  `min-inline-size` is `min-content`, which would stop the grid column shrinking. Both
+  `.round-controls` columns are fixed at the same width, wider than the dial's lone label
+  needs, so Orbit and Aim wrap at the same width rather than one at a time. The label
+  column is `--label` on the group, 70px by default and 46px for Aim, whose single slider
+  row has no siblings to line up with; a group of uniform rows wants the wider default. The
+  lock
+  checkbox is right-aligned because it has no number box to line up with. Rows
+  inside a group lose the tile border and padding, which pays for the legends; the panel is
+  within ~10px of the flat grid it replaced, and `.fields` keeps the tile look for the
+  pivot panel. The pivot dropdown moved out of the tools row into the Pivot group.
 - `editor.setNotice` owns the transient half of the status line: `error || notice ||
   status`, ten seconds, cleared by the next insertion and by `destroy`. Parse errors are
   still sticky, because they describe the path rather than something that just happened.
@@ -492,7 +507,8 @@ if they drift. Run it before assuming a change is done.
 
 A new camera axis touches: `trajectory.AXES`/`DEFAULTS`, `interpolate.AXES`/`DEFAULTS`,
 `render.orbit_matrix` or `render.aim`, `geometry.orbitCamera` or `geometry.aim`, `FIELDS` in
-`js/editor.js`, and a pose in `tests/test_parity.py` that exercises it. A new pivot axis is
+`js/editor.js` **and the `stacks` table that puts it in a group** — an axis missing from
+that table has no row at all — and a pose in `tests/test_parity.py` that exercises it. A new pivot axis is
 the same list with `PIVOT_AXES`/`PIVOT_DEFAULTS` and `PIVOT_FIELDS`.
 
 ## Testing

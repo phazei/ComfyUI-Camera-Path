@@ -158,16 +158,38 @@ const STYLE = `
 .cpath .tools .name{font-size:13px;color:#9a93ad}
 .cpath .fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;flex:0 0 auto}
 .cpath.wide .fields{grid-template-columns:repeat(3,minmax(0,1fr))}
+/* Four groups, two up. The group is what responds to width, not the controls in it:
+   its body wraps, so a puck's axes sit beside it when there is room and underneath it
+   when there is not. min-width:0 is load-bearing - a fieldset defaults to min-content. */
+.cpath .groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;flex:0 0 auto}
+.cpath .group{min-width:0;margin:0;padding:1px 8px 5px;background:#22212a;
+  border:1px solid #36323f;border-radius:7px}
+.cpath .group legend{font-size:12px;color:#9a93ad;padding:0 4px}
+.cpath .group .body{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.cpath .group .stack{display:flex;flex-direction:column;gap:3px;flex:1 1 200px;min-width:0}
+.cpath .group .field{padding:1px 0;background:none;border:0;border-radius:0}
+/* The label column is as wide as the widest label sharing the stack. Aim has one slider
+   row, so 70px there is a gap between Roll and its own slider, not a column. */
+.cpath .group .field span{width:var(--label,70px);white-space:nowrap}
+.cpath .group[data-group=aim]{--label:46px}
 .cpath .field{display:flex;align-items:center;gap:7px;padding:5px 8px;background:#22212a;border:1px solid #36323f;border-radius:7px}
 .cpath .field span{font-size:13px;color:#9a93ad;width:70px}
 .cpath .field input[type=range]{flex:1;min-width:0;accent-color:#7f5cff}
 .cpath .field input[type=number]{width:68px;background:#17161c;border:1px solid #3c3847;border-radius:5px;color:#e8e8ee;
   font:13px ui-monospace,monospace;padding:3px 4px;text-align:right}
+.cpath .field select{min-width:0;font-size:13px;padding:3px 4px}
+.cpath .field select[data-role=pivot]{flex:1 1 auto}
+.cpath .field select[data-role=pivot-target]{flex:0 1 auto;max-width:98px}
 .cpath .field.lock{cursor:pointer}
+/* The checkbox has no number box to line up with, so it follows the right edge instead. */
+.cpath .group .field.lock{justify-content:flex-end}
 .cpath .field.lock span{width:auto;color:#c7c0d8}
 .cpath .field.lock input{accent-color:#7f5cff;width:17px;height:17px}
 .cpath .field.round{gap:8px;min-width:0}
-.cpath .round-controls{display:flex;flex-direction:column;gap:3px;min-width:0}
+/* Both round blocks claim the same width, however little the dial's column needs, so
+   Orbit and Aim reach the width that makes their axes wrap at the same moment. */
+.cpath .group .field.round{flex:0 0 auto}
+.cpath .round-controls{display:flex;flex-direction:column;gap:3px;flex:0 0 92px;min-width:0}
 .cpath .round-controls label{display:flex;align-items:center;gap:3px;font-size:13px;color:#9a93ad}
 .cpath .round-controls input[type=number]{width:54px;min-width:0}
 .cpath .round-controls button{font-size:12px;padding:2px 5px}
@@ -230,9 +252,6 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
       <span class="count" data-role="selection"></span>
     </div>
     <div class="row tools" data-panel="camera">
-      <span class="name">Orbits</span>
-      <select data-role="pivot" title="The pivot this keyframe orbits around"></select>
-      <span>Blend to</span><select data-role="pivot-target" title="Explicit destination for this camera's pivot blend"></select>
       <span class="spacer"></span>
       <button data-action="reset-key" title="Reset the camera relative to its pivot, keeping its frame and pivot">Reset key</button>
       <button data-action="remove">\u2212 Keyframe</button>
@@ -243,7 +262,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
       <button data-action="snap-pivot" title="Put the pivot back on the subject the node found by itself">Snap to auto</button>
       <button data-action="remove-pivot" title="Delete this pivot. Only pivots no keyframe uses can be deleted">\u2212 Pivot</button>
     </div>
-    <div class="fields" data-panel="camera"></div>
+    <div class="groups" data-panel="camera"></div>
     <div class="fields" data-panel="pivot" hidden></div>
     <div class="status"></div>`;
 
@@ -255,8 +274,6 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
   const renderContext = renderCanvas.getContext('2d');
   const track = find('.track');
   const keys = find('.keys');
-  const pivotSelect = find('[data-role=pivot]');
-  const targetSelect = find('[data-role=pivot-target]');
 
   /**
    * Builds a slider + number pair for one axis.
@@ -280,14 +297,41 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
   }
 
   const fields = new Map();
-  const cameraFields = find('.fields[data-panel=camera]');
+  const cameraGroups = find('.groups[data-panel=camera]');
+
+  /**
+   * Builds one labelled group of camera controls.
+   * @param {string} label Legend text.
+   * @returns {HTMLElement} The group's body, which lays its children out in a wrapping row.
+   */
+  function buildGroup(label) {
+    const box = document.createElement('fieldset');
+    box.className = 'group';
+    box.dataset.group = label.toLowerCase();
+    box.innerHTML = `<legend>${label}</legend><div class="body"></div>`;
+    cameraGroups.append(box);
+    return box.querySelector('.body');
+  }
+
+  /**
+   * Adds a column of control rows to a group body.
+   * @param {HTMLElement} body Group body from buildGroup.
+   * @returns {HTMLElement} The column.
+   */
+  function buildStack(body) {
+    const stack = document.createElement('div');
+    stack.className = 'stack';
+    body.append(stack);
+    return stack;
+  }
 
   /**
    * Builds a compact orbit dial or two-axis aim puck, with precise numeric entry.
    * @param {boolean} aim Whether this control edits pan/tilt instead of azimuth.
+   * @param {HTMLElement} into Group body to add it to.
    * @returns {{surface: HTMLElement, mark: HTMLElement}} Elements updated by refresh.
    */
-  function buildRound(aim) {
+  function buildRound(aim, into) {
     const box = document.createElement('div');
     box.className = 'field round';
     box.innerHTML = `<div class="round-surface" data-role="${aim ? 'aim-puck' : 'orbit-dial'}">
@@ -378,21 +422,53 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
         if (type !== 'lostpointercapture') surface.releasePointerCapture(event.pointerId);
       });
     }
-    cameraFields.append(box);
+    into.append(box);
     return { surface, mark: box.querySelector('.round-mark') };
   }
 
-  const orbitDial = buildRound(false), aimPuck = buildRound(true);
-  const blendField = buildField(cameraFields,
-    { name: 'pivot_blend', label: 'Pivot blend %', min: 0, max: 100, step: 1 }, (spec, value) => {
+  // The camera's axes in four groups: where it sits on the orbit, how it is offset from
+  // there, where it looks, and what it is all measured against. The two pucks each lead
+  // the group they belong to. Azimuth lives in the dial and pan/tilt in the puck, so only
+  // the remaining axes need a row; a new axis has to be listed here to appear at all.
+  const orbitGroup = buildGroup('Orbit'), aimGroup = buildGroup('Aim');
+  const positionGroup = buildGroup('Position'), pivotGroup = buildGroup('Pivot');
+  const orbitDial = buildRound(false, orbitGroup);
+  const aimPuck = buildRound(true, aimGroup);
+  const stacks = [
+    [buildStack(orbitGroup), ['elevation', 'distance']],
+    [buildStack(aimGroup), ['roll']],
+    [buildStack(positionGroup), ['lateral', 'height', 'dolly']],
+  ];
+  for (const [into, names] of stacks) {
+    for (const name of names) {
+      fields.set(name, buildField(into, FIELDS.find(spec => spec.name === name), setAxis));
+    }
+  }
+  const aimStack = stacks[1][0];
+  const pivotStack = buildStack(pivotGroup);
+
+  const pivotSelect = document.createElement('select');
+  pivotSelect.dataset.role = 'pivot';
+  pivotSelect.title = 'The pivot this keyframe orbits around';
+  const pivotRow = document.createElement('label');
+  pivotRow.className = 'field';
+  pivotRow.innerHTML = '<span>Orbits</span>';
+  pivotRow.append(pivotSelect);
+  pivotStack.append(pivotRow);
+
+  const blendField = buildField(pivotStack,
+    { name: 'pivot_blend', label: 'Blend %', min: 0, max: 100, step: 1 }, (spec, value) => {
       if (!key() || !Number.isFinite(value)) return;
       key().pivot_blend = clamp(value / 100, 0, 1);
       commit();
       refresh();
     });
-  for (const spec of FIELDS) {
-    if (!fields.has(spec.name)) fields.set(spec.name, buildField(cameraFields, spec, setAxis));
-  }
+  // The blend destination shares the blend's row: the dropdown is what greys the slider,
+  // so the two belong within a glance of each other. It takes its width from the slider.
+  const targetSelect = document.createElement('select');
+  targetSelect.dataset.role = 'pivot-target';
+  targetSelect.title = "Explicit destination for this camera's pivot blend";
+  blendField.number.before(targetSelect);
   const pivotFields = new Map();
   for (const spec of PIVOT_FIELDS) {
     pivotFields.set(spec.name, buildField(find('.fields[data-panel=pivot]'), spec, setPivotAxis));
@@ -410,7 +486,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
     commit();
     refresh();
   });
-  find('.fields[data-panel=camera]').append(lockBox);
+  aimStack.append(lockBox);
 
   pivotSelect.addEventListener('change', () => {
     if (!key()) return;

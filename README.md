@@ -93,7 +93,8 @@ in the middle of the frame and a path drops onto other footage without rescaling
 one per subject and pick which pivot each keyframe orbits; a keyframe that switches
 pivot eases the camera across to the new one instead of jumping.
 
-Each camera also has **Blend to** and **Pivot blend %**. At 0% it uses its primary
+The **Pivot** group holds both: the pivot the camera orbits, and a **Blend %** row whose
+dropdown picks the pivot it blends towards. At 0% it uses its primary
 pivot; at 100% it uses the destination pivot's position and orientation. The target
 is stored explicitly, so adding another camera does not silently retarget an existing
 blend. A missing target is initially inferred from the next distinct camera pivot.
@@ -165,9 +166,11 @@ The node carries a 3D editor:
   The view turns about whichever pivot is selected or in use, so a subject off to
   one side stays put while you look around it
 * a timeline with the keyframes on it, scrubbing and playback at the `fps` input's rate
-* a compact azimuth dial and pan/tilt puck, plus sliders for the remaining camera
-  axes, a lock-on-target checkbox, pivot dropdowns and a blend percentage; selecting a pivot shows
-  its position, tilt/roll and heading sliders instead
+* the camera's controls in four groups — **Orbit** (azimuth dial, elevation, distance),
+  **Aim** (pan/tilt puck, roll, lock on target), **Position** (lateral, height, dolly) and
+  **Pivot** (which pivot it orbits, and the blend towards another). Each group keeps its
+  puck beside its sliders while there is room and stacks them when there is not; selecting
+  a pivot shows its position, tilt/roll and heading sliders instead
 * a camera view that reprojects the real scene
 
 Drag the node taller and the two views grow with it; make it wide and they sit side

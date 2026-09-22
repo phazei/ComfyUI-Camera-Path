@@ -147,13 +147,21 @@ const dragScene = (from, to, init = {}) => {
   pointer(scene, 'pointerup', ...onScreen(...to), init);
 };
 
+const groups = [...element.querySelectorAll('.groups[data-panel=camera] .group')];
 check('builds the viewport, timeline and axis fields',
-      element.querySelectorAll('.fields[data-panel=camera] .field:not(.lock)').length === 9
+      element.querySelectorAll('.groups[data-panel=camera] .field:not(.lock)').length === 10
       && element.querySelectorAll('.fields[data-panel=pivot] .field').length === 6
       && element.querySelector('.fields[data-panel=pivot]').hidden
       && element.querySelector('.field.lock') !== null
       && element.querySelectorAll('.key').length === 2
       && element.querySelector('.scene') !== null);
+check('groups the camera axes by what they do',
+      groups.map(group => group.querySelector('legend').textContent).join() === 'Orbit,Aim,Position,Pivot'
+      && groups.map(group => group.querySelectorAll('.field').length).join() === '3,3,3,2'
+      && groups[0].querySelector('[data-role=orbit-dial]') !== null
+      && groups[1].querySelector('.field.lock') !== null
+      && groups[3].querySelector('[data-role=pivot]') !== null
+      && groups[3].querySelector('[data-role=pivot-target]') !== null);
 check('draws the scene', calls.has('arc') && calls.has('stroke'));
 {
   const saved = stored;
@@ -225,8 +233,11 @@ check('aim keeps precise numeric entry', path()[0].tilt === -23);
 click('recentre-aim');
 check('puck recentre leaves roll and orbit alone',
       path()[0].pan === 0 && path()[0].tilt === 0 && path()[0].roll === 12 && path()[0].azimuth === 0);
-check('round controls precede sliders in the narrow layout',
-      !element.classList.contains('wide') && dial.parentElement.nextElementSibling === puck.parentElement);
+check('each round control leads the group it belongs to, ahead of that group\'s sliders',
+      !element.classList.contains('wide')
+      && [dial, puck].every((round, index) =>
+        round.closest('.group') === groups[index]
+        && round.parentElement.nextElementSibling.classList.contains('stack')));
 Object.defineProperty(element, 'clientWidth', { value: 800, configurable: true });
 element.resize();
 check('wide layout retains both round controls and numeric entry',
@@ -295,7 +306,7 @@ const trackX = (fraction) => 30 + fraction * 400 * ZOOM;
     check(`insertion at ${frame} preserves position and orientation`,
           ['eye', 'right', 'down', 'forward'].every(name => before[name].every((value, i) => Math.abs(value - after[name][i]) < 0.001)));
   }
-  const blendInput = [...element.querySelectorAll('.field')].find(field => field.textContent.startsWith('Pivot blend')).querySelector('input[type=number]');
+  const blendInput = [...element.querySelectorAll('.field')].find(field => field.textContent.startsWith('Blend %')).querySelector('input[type=number]');
   blendInput.value = '25';
   blendInput.dispatchEvent(new window.Event('input', { bubbles: true }));
   check('blend percentage is editable and stored as a fraction', path().find(key => key.frame === 30).pivot_blend === 0.25);
@@ -346,7 +357,7 @@ const trackX = (fraction) => 30 + fraction * 400 * ZOOM;
   check('deleting the last key also clears selection without seeking',
         path().length === 1 && !element.querySelector('.key.selected')
         && element.querySelector('.cursor').style.left === '50%'
-        && element.querySelector('.fields[data-panel=camera]').hidden);
+        && element.querySelector('.groups[data-panel=camera]').hidden);
   const afterDelete = stored;
   element.querySelector('.viewport').dispatchEvent(new window.WheelEvent('wheel', {
     bubbles: true, altKey: true, deltaY: 50,
@@ -522,7 +533,7 @@ check('add pivot appends one and selects it',
       pivots().length === 2
       && element.querySelector('[data-role=selection]').textContent.startsWith('pivot 2')
       && !element.querySelector('.fields[data-panel=pivot]').hidden
-      && element.querySelector('.fields[data-panel=camera]').hidden);
+      && element.querySelector('.groups[data-panel=camera]').hidden);
 check('a fresh pivot has nothing to snap and can be removed',
       element.querySelector('[data-action=snap-pivot]').disabled
       && !element.querySelector('[data-action=remove-pivot]').disabled);
