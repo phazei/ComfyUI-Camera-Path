@@ -362,8 +362,23 @@ drawn **and hit tested**; its `point` is where it really is. Consequences worth 
 
 ### Preview cache
 
-After a run the node writes up to 8 downscaled samples to ComfyUI's temp
-directory: an RGB PNG plus a depth PNG with 16-bit depth packed big-endian into R and G, and
+After a run the node writes downscaled samples to the
+`camera_path` subfolder of ComfyUI's temp directory — `preview.SUBFOLDER`, kept out of the
+temp root because people read that folder for their own outputs. The file references in the
+payload already carried `subfolder`, and `camera-path.js` forwards it to `/view`, so the
+frontend needed no change.
+
+`sample_frames` takes **every `PREVIEW_STRIDE`-th (5th) distinct source frame**, so the
+count follows the clip instead of a constant: near enough five a second at 24 or 30 fps
+without the node reading `fps`, which it must not. `PREVIEW_FLOOR` (10) keeps a short clip
+worth scrubbing, `PREVIEW_SAMPLES` (120) is the ceiling, and the last distinct frame always
+joins the set so the end of the timeline previews what it will be rendered from. A source
+with fewer distinct frames than the floor is cached whole, which is why a still image has
+always been exact. A clip past the ceiling — over 20 s at 30 fps — goes back to being
+coarser than the render, and that is the one case where the preview understates the
+frame-to-frame jitter of MoGe's per-frame reconstructions.
+
+Each sample is an RGB PNG plus a depth PNG with 16-bit depth packed big-endian into R and G, and
 `B = 255` marking invalid, `B = 127` marking a valid but pruned point, and `B = 0` kept.
 The metadata (normalised `fx/fy/cx/cy`, `pivot_z`, `z_low/z_high`,
 `splat`, sample filenames) rides along in the UI payload. `js/preview.js` decodes it back

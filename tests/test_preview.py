@@ -25,7 +25,9 @@ class PreviewTests(unittest.TestCase):
             self.assertEqual(meta["width"], 768)
             self.assertEqual(meta["levels"], preview.PREVIEW_LEVELS)
             _, expected_depth, expected_valid, expected_keep = preview._downscale(rgb, depth, valid, keep, 768)
-            with Image.open(f"{directory}/{meta['samples'][0]['z']['filename']}") as image:
+            reference = meta["samples"][0]["z"]
+            self.assertEqual(reference["subfolder"], preview.SUBFOLDER)
+            with Image.open(f"{directory}/{reference['subfolder']}/{reference['filename']}") as image:
                 packed = np.asarray(image).copy()
             np.testing.assert_array_equal(packed[..., 2] < 255, expected_valid.numpy())
             np.testing.assert_array_equal(packed[..., 2] == 0, (expected_valid & expected_keep).numpy())
@@ -40,8 +42,25 @@ class PreviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             meta = preview.write([(0, torch.zeros(4, 6, 3), z, z.bool(), ~z.bool())], directory, {})
             self.assertIsNotNone(meta)
-            with Image.open(f"{directory}/{meta['samples'][0]['z']['filename']}") as image:
+            reference = meta["samples"][0]["z"]
+            with Image.open(f"{directory}/{reference['subfolder']}/{reference['filename']}") as image:
                 self.assertTrue(bool((np.asarray(image)[..., 2] == 127).all()))
+
+    def test_sampling_strides_the_source_between_a_floor_and_a_ceiling(self):
+        # A still, or a clip short enough that every reconstruction fits, is cached whole.
+        self.assertEqual(preview.sample_frames([0] * 120), [0])
+        self.assertEqual(preview.sample_frames(range(8)), list(range(8)))
+        # Long enough to stride: every fifth frame, and never without the last one.
+        picked = preview.sample_frames(range(150))
+        self.assertEqual(picked[:3], [0, 5, 10])
+        self.assertEqual(picked[-1], 149)
+        self.assertEqual(len(picked), 31)
+        # Between the two, the floor keeps a short clip worth scrubbing.
+        self.assertEqual(len(preview.sample_frames(range(20))), preview.PREVIEW_FLOOR)
+        # Far past it, the ceiling holds, both ends included.
+        many = preview.sample_frames(range(20000))
+        self.assertEqual(len(many), preview.PREVIEW_SAMPLES)
+        self.assertEqual((many[0], many[-1]), (0, 19999))
 
     def test_small_sources_are_not_upscaled(self):
         rgb = torch.zeros(2, 4, 3)

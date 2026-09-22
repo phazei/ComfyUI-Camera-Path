@@ -141,7 +141,11 @@ class NodeRun(unittest.TestCase):
         self.assertAlmostEqual(cache["pivot_z"], 2.0, places=5)
         for sample in cache["samples"]:
             for reference in (sample["rgb"], sample["z"]):
-                self.assertTrue(os.path.exists(os.path.join(self.temp.name, reference["filename"])))
+                self.assertEqual(reference["subfolder"], context.preview.SUBFOLDER)
+                self.assertTrue(os.path.exists(
+                    os.path.join(self.temp.name, reference["subfolder"], reference["filename"])))
+        # The cache is a working file. A temp directory people read must stay readable.
+        self.assertEqual([], [name for name in os.listdir(self.temp.name) if name.endswith(".png")])
 
     def test_pruning_opens_mask_holes_at_depth_edges(self):
         source = torch.ones(1, 16, 1024, 3)
@@ -156,7 +160,8 @@ class NodeRun(unittest.TestCase):
         for output in (plain, pruned):
             meta = json.loads(output["ui"]["camera_path"][0])["preview"]
             self.assertEqual(meta["width"], 768)
-            with Image.open(os.path.join(self.temp.name, meta["samples"][0]["z"]["filename"])) as image:
+            reference = meta["samples"][0]["z"]
+            with Image.open(os.path.join(self.temp.name, reference["subfolder"], reference["filename"])) as image:
                 cached.append(image.tobytes())
         self.assertEqual(cached[0], cached[1])
 

@@ -167,8 +167,18 @@ The host reads both widgets and routes their callbacks to `editor.sync`. Only a 
 change rebuilds the clouds; camera dragging does not. Settings changed during an async
 cache load are respected when it completes. Old caches lacking `levels` prompt a rerun.
 
+Sample count and location changed after he watched a forward-dolly clip: the output
+stuttered while the preview glided, because the render rebuilds the cloud every source
+frame and the cache only held 8. It is now every 5th distinct frame (floor 10, ceiling 120)
+and lands in `temp/camera_path/` rather than the temp root, which he reads for his own
+outputs. He measured 60 samples at 768x432 as 32 MB on disk with no perceptible cost.
+
 Performance details:
 
+- Clouds are still built **eagerly for every sample** in `createPreview`. At the 120
+  ceiling that is roughly 1 GB in the tab (~3 MB of retained arrays plus ~5 MB of built
+  cloud per sample). Building them on first visit was discussed and deliberately deferred
+  until it bites; it is the obvious move if a long clip ever makes the editor sluggish.
 - The old ~90k-point scene-view limit is removed: all points at the chosen level are drawn.
 - Our preview reprojects **in JavaScript on the CPU, single-threaded, on every redraw**,
   unlike CrossViewWarp's server-rendered one. Cost is linear in point count, so 384 → 768
@@ -204,8 +214,8 @@ visibly. MoGe quality can change depth estimates, but not the number of cached p
   pixel**. MoGe below source is nearest-upsampled and comes out blocky; MoGe above source
   is subsampled and the extra detail is discarded. Raising `resolution_level` past roughly
   the source resolution is wasted work.
-- **The editor preview is capped** by the selected quality level over 8 sampled frames.
-  It was previously fixed at 384.
+- **The editor preview is capped** by the selected quality level over the sampled frames.
+  It was previously fixed at 384, and previously 8 samples.
 - The maintainer explicitly **does not want a higher output resolution** — the source is
   already resized to the intended video resolution. Only the on-screen preview is at issue.
 

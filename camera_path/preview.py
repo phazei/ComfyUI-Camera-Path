@@ -14,16 +14,40 @@ import numpy as np
 import torch
 
 PREVIEW_LEVELS = {"Low (384)": 384, "Medium (512)": 512, "High (768)": 768}
-PREVIEW_SAMPLES = 8
+# The cache is a working file, not an output. It goes in its own folder so it cannot be
+# mistaken for one in a temp directory people actually read.
+SUBFOLDER = "camera_path"
+# Every fifth source frame: near enough 5 a second at 24 or 30 fps without the node having
+# to know the rate, and the preview then jitters the way the video does instead of holding
+# one reconstruction for a second at a time. The floor keeps a short clip worth scrubbing
+# and the ceiling is a memory budget - each sample costs a PNG pair on disk, a decode on
+# load, and roughly 8 MB in the browser once its cloud is built.
+PREVIEW_STRIDE = 5
+PREVIEW_FLOOR = 10
+PREVIEW_SAMPLES = 120
+
+
+def _spread(distinct: list[int], count: int) -> list[int]:
+    """`count` frames evenly spread across `distinct`, both ends included."""
+    step = (len(distinct) - 1) / (count - 1)
+    return sorted({distinct[int(round(k * step))] for k in range(count)})
 
 
 def sample_frames(source_indices) -> list[int]:
-    """Up to PREVIEW_SAMPLES distinct source frames, evenly spread over the output."""
+    """Every PREVIEW_STRIDE-th distinct source frame, within the floor and the ceiling.
+
+    The last frame always joins the set, whatever the stride lands on, so the end of
+    the timeline previews the geometry it will actually be rendered from.
+    """
     distinct = sorted(set(int(i) for i in source_indices))
-    if len(distinct) <= PREVIEW_SAMPLES:
+    if len(distinct) <= max(PREVIEW_FLOOR, PREVIEW_STRIDE):
         return distinct
-    step = (len(distinct) - 1) / (PREVIEW_SAMPLES - 1)
-    return sorted({distinct[int(round(k * step))] for k in range(PREVIEW_SAMPLES)})
+    picked = distinct[::PREVIEW_STRIDE]
+    if len(picked) < PREVIEW_FLOOR:
+        picked = _spread(distinct, PREVIEW_FLOOR)
+    elif len(picked) > PREVIEW_SAMPLES:
+        picked = _spread(distinct, PREVIEW_SAMPLES)
+    return sorted(set(picked) | {distinct[-1]})
 
 
 def _downscale(rgb: torch.Tensor, depth: torch.Tensor, valid: torch.Tensor,
@@ -56,7 +80,8 @@ def write(samples, temp_dir: str, meta: dict) -> dict | None:
     span = max(high - low, 1e-9)
 
     stamp = f"camera_path_{int(time.time() * 1000):x}_{os.getpid() & 0xffff:04x}"
-    os.makedirs(temp_dir, exist_ok=True)
+    directory = os.path.join(temp_dir, SUBFOLDER)
+    os.makedirs(directory, exist_ok=True)
     entries = []
     for order, (frame, rgb, depth, valid, keep) in enumerate(scaled):
         quantized = ((depth - low) / span * 65535.0).clamp(0, 65535).to(torch.int32)
@@ -65,11 +90,11 @@ def write(samples, temp_dir: str, meta: dict) -> dict | None:
                            np.where(valid.numpy(), np.where(keep.numpy(), 0, 127), 255).astype(np.uint8)], axis=-1)
         pixels = (rgb.clamp(0, 1) * 255.0).round().to(torch.uint8).numpy()
         names = (f"{stamp}_{order}_rgb.png", f"{stamp}_{order}_z.png")
-        Image.fromarray(pixels).save(os.path.join(temp_dir, names[0]), compress_level=3)
-        Image.fromarray(packed).save(os.path.join(temp_dir, names[1]), compress_level=3)
+        Image.fromarray(pixels).save(os.path.join(directory, names[0]), compress_level=3)
+        Image.fromarray(packed).save(os.path.join(directory, names[1]), compress_level=3)
         entries.append({"frame": int(frame),
-                        "rgb": {"filename": names[0], "subfolder": "", "type": "temp"},
-                        "z": {"filename": names[1], "subfolder": "", "type": "temp"}})
+                        "rgb": {"filename": names[0], "subfolder": SUBFOLDER, "type": "temp"},
+                        "z": {"filename": names[1], "subfolder": SUBFOLDER, "type": "temp"}})
     height, width = scaled[0][2].shape
     return dict(meta, levels=PREVIEW_LEVELS, width=int(width), height=int(height),
                 z_low=low, z_high=high, samples=entries)

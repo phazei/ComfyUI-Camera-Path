@@ -62,7 +62,12 @@ redraws. Path-view points grow with zoom, capped at a 3 CSS-pixel radius to avoi
 blocks. This does not change the video renderer's splat size. Pruning is computed before
 preview downsampling, so every quality level uses the same source-resolution validity mask.
 
-Each run caches up to eight unpruned samples at High quality, plus their pruning masks.
+Each run caches unpruned samples at High quality, plus their pruning masks: every fifth
+distinct source frame, at least ten, and never more than 120. MoGe solves each frame on its
+own, so a clip's geometry shifts slightly from frame to frame; sampling it this densely
+means the preview steps through that the way the video does, instead of holding one
+reconstruction for a second at a time and looking smoother than the result. A single source
+image has one reconstruction, so its preview is exact.
 Changing pruning or quality rebuilds the displayed cloud locally, without another run or
 download. Low still reduces redraw work, but no longer reduces the cache size. After
 upgrading from the older, pruned-only cache, run the node once to enable live comparisons.
@@ -219,8 +224,9 @@ changes the direction of that offset too. This is camera movement, not lens zoom
 
 Before the node has run, the editor shows a placeholder — a square frame with a
 figure standing in it — so a move can be blocked out with nothing wired up. After
-the node has run once it keeps a downscaled copy of the point cloud in ComfyUI's
-temp folder. The editor loads it, shows it in both views and reprojects it live as
+the node has run once it keeps a downscaled copy of the point cloud in the
+`camera_path` subfolder of ComfyUI's temp folder, out of the way of your own outputs.
+The editor loads it, shows it in both views and reprojects it live as
 you drag the path, so previewing a different move costs nothing and does not
 re-run MoGe. Changing the source or the geometry needs another run.
 
