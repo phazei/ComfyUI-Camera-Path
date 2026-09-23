@@ -363,19 +363,35 @@ export function buildCloud(depth, rgba, width, height, lens) {
 }
 
 /**
+ * `#rrggbb` or `#rgb` (the `#` optional) as 0..255 channels, like render.hex_color.
+ * Anything else is black: a bad widget value must not take the preview down with it.
+ * @param {string} value Colour widget value.
+ * @returns {number[]} `[r, g, b]`.
+ */
+export function hexColor(value) {
+  let digits = String(value ?? '').trim().replace(/^#/, '');
+  if (digits.length === 3) digits = [...digits].map((c) => c + c).join('');
+  if (!/^[0-9a-f]{6}$/i.test(digits)) return [0, 0, 0];
+  return [0, 2, 4].map((i) => parseInt(digits.slice(i, i + 2), 16));
+}
+
+/**
  * Reprojects the cloud from a virtual camera into an ImageData buffer, z-buffered.
  * @param {object} cloud Cloud from buildCloud().
  * @param {object} camera Basis from orbitCamera().
  * @param {{fx: number, fy: number, cx: number, cy: number}} lens Intrinsics in target pixels.
  * @param {{data: Uint8ClampedArray, width: number, height: number, depth: Float32Array}} target Output buffer.
  * @param {number} splat Splat radius in pixels.
+ * @param {number[]} [background] Hole colour as 0..255 channels.
  * @returns {number} Fraction of pixels no point reached.
  */
-export function renderCamera(cloud, camera, lens, target, splat) {
+export function renderCamera(cloud, camera, lens, target, splat, background = [0, 0, 0]) {
   const { data, width, height, depth } = target;
   const pixels = width * height;
-  data.fill(0);
   for (let i = 0; i < pixels; i++) {
+    data[i * 4] = background[0];
+    data[i * 4 + 1] = background[1];
+    data[i * 4 + 2] = background[2];
     data[i * 4 + 3] = 255;
     depth[i] = Infinity;
   }

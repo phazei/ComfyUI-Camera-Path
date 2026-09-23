@@ -31,6 +31,16 @@ def splat_bias(dy: int, dx: int) -> float:
     return 1.0 + SPLAT_BIAS * (dy * dy + dx * dx)
 
 
+def hex_color(value: str) -> tuple[float, float, float]:
+    """``#rrggbb`` or ``#rgb`` (the ``#`` optional) as RGB in 0..1."""
+    digits = value.strip().lstrip("#")
+    if len(digits) == 3:
+        digits = "".join(c * 2 for c in digits)
+    if len(digits) != 6:
+        raise ValueError(f"not a hex colour: {value!r}")
+    return tuple(int(digits[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+
+
 def _rot_x(angle: float) -> np.ndarray:
     c, s = math.cos(angle), math.sin(angle)
     return np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
@@ -301,12 +311,14 @@ class PointCloud:
         """This cloud followed by another, so both splat through one z-buffer."""
         return PointCloud(torch.cat([self.points, other.points]), torch.cat([self.colors, other.colors]))
 
-    def render(self, c2w: np.ndarray, intrinsics: tuple, size: tuple[int, int], splat: int = 1):
+    def render(self, c2w: np.ndarray, intrinsics: tuple, size: tuple[int, int], splat: int = 1,
+               background: tuple[float, float, float] = (0.0, 0.0, 0.0)):
         """-> (rgb float32 [H, W, 3], hole bool [H, W]) seen from the given camera.
 
         Every point is splatted over a (2*splat+1)^2 window and the nearest one
         wins each pixel, so the far side of the scene cannot paint over the near
-        side. Pixels no point reached at all are holes. Depth is biased outwards
+        side. Pixels no point reached at all are holes, painted ``background``
+        (RGB in 0..1). Depth is biased outwards
         across the window, so a point owns its own pixel whenever a neighbour is
         at the same distance; without that a flat wall comes out shifted by the
         last splat offset.
@@ -342,7 +354,7 @@ class PointCloud:
         for dy, dx in offsets:
             zbuffer.scatter_reduce_(0, target_index(dy, dx), z * splat_bias(dy, dx), reduce="amin",
                                     include_self=True)
-        image = torch.zeros((pixels + 1, 3), dtype=torch.float32, device=device)
+        image = torch.tensor(background, dtype=torch.float32, device=device).repeat(pixels + 1, 1)
         covered = torch.zeros(pixels + 1, dtype=torch.bool, device=device)
         for dy, dx in offsets:
             index = target_index(dy, dx)

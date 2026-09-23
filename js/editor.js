@@ -14,7 +14,7 @@
 import { poseAt, pivotAt, pivotBlendAt, normalizePath, serializePath, identityPose, defaultPath, defaultPivot,
          PIVOT_AXES, PIVOT_DEFAULTS } from './interpolate.js';
 import { poseCamera, cameraScenePosition, pivotWorld, scenePoint, worldOffset, screenBasis, orbitFrame,
-         uprightRotation, dragOrbit, dragTruck, solvePose, renderCamera, renderScene, markerLattice,
+         uprightRotation, dragOrbit, dragTruck, solvePose, renderCamera, hexColor, renderScene, markerLattice,
          concatClouds } from './geometry.js';
 import { loadPreview, createPreview, sampleFor } from './preview.js';
 import { floorGrid, placeholderPreview, DEFAULT_HALF_HEIGHT } from './furniture.js';
@@ -224,12 +224,14 @@ const STYLE = `
  *   the lattice is shown in both views while it is, so the preview matches the render.
  * @param {() => boolean} [host.readPrune] Apply depth-edge pruning to the cached cloud.
  * @param {() => string} [host.readQuality] Named preview quality level.
+ * @param {() => string} [host.readBackground] The node's hole colour as hex; the
+ *   render pane paints its holes with it, so the preview matches the render.
  * @returns {{element: HTMLElement, sync: Function, loadPath: Function, setInputPath: Function, setPreview: Function, destroy: Function}}
  *   Editor handle. `element` goes into addDOMWidget().
  */
 export function createCameraEditor({ readPath, writePath, readFrameCount, readMarkers = () => false,
                                      readFps = () => DEFAULT_FPS, readPrune = () => true,
-                                     readQuality = () => 'Medium (512)' }) {
+                                     readQuality = () => 'Medium (512)', readBackground = () => '#000000' }) {
   const root = document.createElement('section');
   root.className = 'cpath';
   root.innerHTML = `<style>${STYLE}</style>
@@ -1001,7 +1003,8 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
     renderContext.fillStyle = '#141419';
     renderContext.fillRect(0, 0, width, height);
     const camera = poseCamera(poseAt(path, playhead), preview.pivotZ);
-    const holes = renderCamera(cloudAt(playhead), camera, preview.lens, preview.target, preview.splat);
+    const holes = renderCamera(cloudAt(playhead), camera, preview.lens, preview.target, preview.splat,
+                               hexColor(readBackground()));
     preview.context.putImageData(preview.image, 0, 0);
     const aspect = preview.meta.source_width / preview.meta.source_height;
     const w = Math.min(width, height * aspect), h = w / aspect;

@@ -2,7 +2,7 @@
 // tests/test_parity.py compares the answer against the Python implementation.
 import { readFileSync } from 'node:fs';
 import { poseAt, normalizePath, serializePath } from '../js/interpolate.js';
-import { orbitCamera, poseCamera, buildCloud, renderCamera, markerLattice, concatClouds } from '../js/geometry.js';
+import { orbitCamera, poseCamera, buildCloud, renderCamera, markerLattice, concatClouds, hexColor } from '../js/geometry.js';
 
 const job = JSON.parse(readFileSync(0, 'utf8'));
 const camera = ({ pose, pivot, tilt = 0, roll = 0 }) => {
@@ -10,7 +10,8 @@ const camera = ({ pose, pivot, tilt = 0, roll = 0 }) => {
   return [basis.right, basis.down, basis.forward, basis.eye];
 };
 
-function reproject({ width, height, depth, colors, lens, pose, pivot, tilt = 0, roll = 0, splat, markers = false }) {
+function reproject({ width, height, depth, colors, lens, pose, pivot, tilt = 0, roll = 0, splat, markers = false,
+                     background = '#000000' }) {
   const rgba = new Uint8Array(width * height * 4);
   for (let i = 0; i < width * height; i++) {
     rgba[i * 4] = colors[i * 3];
@@ -23,7 +24,8 @@ function reproject({ width, height, depth, colors, lens, pose, pivot, tilt = 0, 
     data: new Uint8ClampedArray(width * height * 4), width, height,
     depth: new Float32Array(width * height),
   };
-  const holes = renderCamera(cloud, orbitCamera(pose, pivot ?? job.pivot_z, tilt, roll), lens, target, splat);
+  const holes = renderCamera(cloud, orbitCamera(pose, pivot ?? job.pivot_z, tilt, roll), lens, target, splat,
+                             hexColor(background));
   const pixels = new Array(width * height * 3);
   for (let i = 0; i < width * height; i++) {
     pixels[i * 3] = target.data[i * 4];

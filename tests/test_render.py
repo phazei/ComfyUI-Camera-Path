@@ -266,6 +266,23 @@ class Rendering(unittest.TestCase):
         self.assertTrue(bool(hole[:, :7].all()))
         self.assertFalse(bool(hole[:, 9:].any()))
 
+    def test_holes_are_painted_the_background(self):
+        mask = torch.ones(HEIGHT, WIDTH, dtype=torch.bool)
+        mask[:, :8] = False
+        cloud, colors = self.cloud(torch.full((HEIGHT, WIDTH), 2.0), mask)
+        rgb, hole = cloud.render(render.orbit_matrix(pose(), 2.0), LENS, (WIDTH, HEIGHT), 1, (1.0, 0.0, 1.0))
+        self.assertTrue(torch.equal(rgb[hole], torch.tensor([1.0, 0.0, 1.0]).expand(int(hole.sum()), 3)))
+        # Past the splat's reach into the masked edge, the geometry is untouched.
+        self.assertTrue(torch.equal(rgb[:, 9:], colors[:, 9:]))
+
+    def test_hex_colours_parse(self):
+        self.assertEqual(render.hex_color("#ff00ff"), (1.0, 0.0, 1.0))
+        self.assertEqual(render.hex_color("F0F"), (1.0, 0.0, 1.0))
+        self.assertEqual(render.hex_color("#000000"), (0.0, 0.0, 0.0))
+        for bad in ("", "#ff00f", "#gg0000"):
+            with self.assertRaises(ValueError):
+                render.hex_color(bad)
+
     def test_a_truck_shifts_the_image_the_other_way(self):
         colors = torch.zeros(HEIGHT, WIDTH, 3)
         colors[:, WIDTH // 2] = 1.0

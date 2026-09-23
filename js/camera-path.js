@@ -148,6 +148,7 @@ app.registerExtension({
       readMarkers: () => Boolean(find("markers")?.value),
       readPrune: () => Boolean(find("prune_depth_edges")?.value),
       readQuality: () => find("preview_quality")?.value || "Medium (512)",
+      readBackground: () => find("background")?.value || "#000000",
     });
     node.cameraPathEditor = editor;
 
@@ -182,7 +183,7 @@ app.registerExtension({
       return size;
     };
 
-    for (const name of ["keyframes", "frame_count", "fps", "markers", "prune_depth_edges", "preview_quality"]) {
+    for (const name of ["keyframes", "frame_count", "fps", "markers", "background", "prune_depth_edges", "preview_quality"]) {
       const target = find(name);
       if (!target) continue;
       const callback = target.callback;

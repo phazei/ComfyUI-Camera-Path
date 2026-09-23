@@ -36,6 +36,7 @@ MoGe geometry comes from the native nodes in `image/geometry estimation`:
 | `frame_count` | `INT` | Number of output frames. Defaults to 120. |
 | `fps` | `FLOAT` | Rate the editor's timeline and playback run at. Defaults to 24 and does not change what is rendered. |
 | `markers` | `BOOLEAN` | Burn a lattice of small coloured spheres into the video. Off by default. |
+| `background` | `COLOR` | Colour of the holes, the pixels no point reached. Black by default. Match what your downstream model was trained on: CrossViewWarp-style warp videos use magenta, `#ff00ff`. The editor's render pane follows it immediately. |
 | `prune_depth_edges` | `BOOLEAN` | Remove points crossing depth discontinuities. On by default; trades streaks for holes. Preview updates immediately; rerun to update the output video. |
 | `preview_quality` | `COMBO` | Low (384), Medium (512, default), High (768): displayed preview long side, capped by source size. Updates immediately. Output resolution is unchanged. |
 | `keyframes` | `STRING` | Keyframes as JSON. The editor writes it, and it is hidden from the node body — the `camera_path` output carries the same JSON. |
@@ -234,7 +235,8 @@ re-run MoGe. Changing the source or the geometry needs another run.
 
 * Rendering is a z-buffered point splat on whichever device ComfyUI is using.
   Around 6 ms per 720p frame on a GPU, around 140 ms on CPU.
-* Regions the source camera never saw come back black and flagged in `video_mask`.
+* Regions the source camera never saw come back in the `background` colour and
+  flagged in `video_mask`.
   Past roughly 40 degrees of orbit most of a single still is holes; feed the mask
   to an inpainting or video model if you need them filled.
 * `js/interpolate.js` and `js/geometry.js` re-implement `camera_path/trajectory.py`

@@ -93,7 +93,8 @@ class FrontendParity(unittest.TestCase):
                                                          (0, POSES[3], None, {}), (1, POSES[2], OFF_AXIS, {}),
                                                          (1, POSES[1], OFF_AXIS, FRAME),
                                                          (1, POSES[1], None, {"markers": True}),
-                                                         (1, POSES[2], OFF_AXIS, {"markers": True}))]
+                                                         (1, POSES[2], OFF_AXIS, {"markers": True}),
+                                                         (1, POSES[1], None, {"background": "#ff00ff"}))]
         job = {"path": PATH, "frames": frames, "cameras": CAMERAS, "pivot_z": PIVOT_Z, "renders": cls.renders}
         result = subprocess.run(["node", str(SCRIPT)], input=json.dumps(job), capture_output=True,
                                 text=True, cwd=SCRIPT.parent)
@@ -144,12 +145,16 @@ class FrontendParity(unittest.TestCase):
         lattice = render.PointCloud.lattice(PIVOT_Z, geometry.points.device)
         lens = (LENS["fx"], LENS["fy"], LENS["cx"], LENS["cy"])
         for job, javascript in zip(self.renders, self.answer["renders"]):
-            with self.subTest(pose=job["pose"], splat=job["splat"], markers=job.get("markers", False)):
+            background = job.get("background", "#000000")
+            with self.subTest(pose=job["pose"], splat=job["splat"], markers=job.get("markers", False),
+                              background=background):
                 cloud = geometry.joined(lattice) if job.get("markers") else geometry
                 self.assertEqual(cloud.points.shape[0], javascript["points"])
                 matrix = render.orbit_matrix(job["pose"], job["pivot"] if job["pivot"] is not None else PIVOT_Z,
                                              job.get("tilt", 0.0), job.get("roll", 0.0))
-                rgb, hole = cloud.render(matrix, lens, (WIDTH, HEIGHT), job["splat"])
+                rgb, hole = cloud.render(matrix, lens, (WIDTH, HEIGHT), job["splat"], render.hex_color(background))
+                if "background" in job:
+                    self.assertGreater(float(hole.float().mean()), 0.01, "the pose must open holes to test")
                 python = (rgb * 255.0).round().to(torch.int64).reshape(-1, 3)
                 other = torch.tensor(javascript["pixels"], dtype=torch.int64).reshape(-1, 3)
                 # A point sitting exactly on a pixel edge can round either way: the browser

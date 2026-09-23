@@ -50,7 +50,10 @@ camera-move video, with the camera path authored in an interactive 3D editor on 
 
 - **Generic utility, not a workflow** — it outputs a plain `IMAGE` batch. It must stay usable
   as a reference/control video by any downstream model. No model-specific resolutions,
-  frame-count grids, hole-colour conventions, prompt building or conditioning.
+  frame-count grids, fixed hole-colour conventions, prompt building or conditioning. The
+  hole colour is a free `background` widget, black by default, precisely so that no one
+  model's convention is baked in; the maintainer added it for a LoRA trained on
+  CrossViewWarp's magenta holes.
 - **Few knobs** — the pivot, the lens and the interpolation are derived from the geometry.
   Do not add a control unless the node genuinely cannot work without it.
 - **The preview must match the render** — the JS editor re-implements the Python camera math.
@@ -116,7 +119,8 @@ standalone. Everything that touches ComfyUI lives in `nodes/` and `__init__.py`.
 `CameraPath_Video` (`nodes/camera_path_video.py`):
 
 - Inputs: `source` (IMAGE), `moge_geometry` (MOGE_GEOMETRY), `frame_count` (INT, 120),
-  `fps` (FLOAT, 24), `markers` (BOOLEAN), `prune_depth_edges` (BOOLEAN, true),
+  `fps` (FLOAT, 24), `markers` (BOOLEAN), `background` (COLOR, `#000000`),
+  `prune_depth_edges` (BOOLEAN, true),
   `preview_quality` (COMBO, Medium (512)), `keyframes` (STRING), `camera_path` (STRING,
   socket only).
 - Outputs: `camera_video` (IMAGE, source resolution), `camera_path` (STRING, round-trips
@@ -139,6 +143,11 @@ run, which is exactly what the old single-input design did.
   The editor does not wait for the payload to hear about it: `js/camera-path.js` hands it
   a `readMarkers` accessor on the widget, so toggling the checkbox shows or hides the
   lattice in both panes at once and the preview matches the render by construction.
+- `background` is the hole colour, an `io.Color` widget (a native picker on both
+  renderers). `render.hex_color` parses it for `PointCloud.render`; `geometry.hexColor`
+  does the same for `renderCamera`, reached through a `readBackground` accessor, so the
+  render pane repaints its holes the moment the colour changes. Only the render pane: the
+  overview's dark backdrop is editor chrome, not output. `video_mask` is independent of it.
 - Output frame `i` uses source frame `i`; once the source runs out its last frame and last
   geometry frame are held. The input batch is never interpolated in time.
 - The lens and the **automatic pivot depth** are read from the **anchor frame (index 0)**
@@ -279,7 +288,7 @@ special "match source" mode was discussed and deliberately not added.
 
 `render.PointCloud.render` splats each point over a `(2*splat+1)²` window with a z-buffer,
 in torch, on `comfy.model_management.get_torch_device()`. Roughly 6 ms per 720p frame on a
-GPU, 140 ms on CPU. Holes (pixels no point reached) come back black and are reported in
+GPU, 140 ms on CPU. Holes (pixels no point reached) come back in the `background` colour and are reported in
 `video_mask`.
 
 ### Marker lattice

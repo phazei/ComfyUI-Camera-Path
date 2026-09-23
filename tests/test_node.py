@@ -43,9 +43,10 @@ class NodeRun(unittest.TestCase):
         cls.temp.cleanup()
 
     def run_node(self, source, moge, frames, path, camera_path=None, markers=False, fps=24.0,
-                 prune=True, quality="Medium (512)"):
+                 prune=True, quality="Medium (512)", background="#000000"):
         """Calls the node the way ComfyUI would, and returns {"result", "ui"}."""
-        output = self.node.execute(source, moge, frames, fps, markers, prune, quality, path, camera_path)
+        output = self.node.execute(source, moge, frames, fps, markers, background, prune, quality, path,
+                                   camera_path)
         return {"result": output.result, "ui": output.ui}
 
     def test_v3_entry_point_exposes_the_node(self):
@@ -57,9 +58,11 @@ class NodeRun(unittest.TestCase):
     def test_schema_is_valid(self):
         self.assertEqual(self.schema.node_id, "CameraPath_Video")
         self.assertEqual([i.id for i in self.schema.inputs],
-                         ["source", "moge_geometry", "frame_count", "fps", "markers",
+                         ["source", "moge_geometry", "frame_count", "fps", "markers", "background",
                           "prune_depth_edges", "preview_quality", "keyframes",
                           "camera_path"])
+        # Black by default, so adding the colour changed no existing render.
+        self.assertEqual(next(i for i in self.schema.inputs if i.id == "background").default, "#000000")
         count, rate = (next(i for i in self.schema.inputs if i.id == name) for name in ("frame_count", "fps"))
         self.assertEqual((count.default, rate.default), (120, 24.0))
         self.assertTrue(next(i for i in self.schema.inputs if i.id == "prune_depth_edges").default)
@@ -107,6 +110,18 @@ class NodeRun(unittest.TestCase):
         self.assertFalse(bool(mask[0].any()))
         self.assertGreater(float(mask[5].mean()), 0.05)
         self.assertFalse(torch.equal(video[5], source[0]))
+
+    def test_holes_take_the_background_colour(self):
+        source = torch.rand(1, HEIGHT, WIDTH, 3)
+        path = json.dumps([{"frame": 0}, {"frame": 5, "azimuth": 30}])
+        video, _, mask = self.run_node(source, geometry(torch.tensor([2.0])), 6, path,
+                                       background="#ff00ff")["result"]
+        holes = mask[5].bool()
+        self.assertTrue(bool(holes.any()))
+        self.assertTrue(torch.equal(video[5][holes], torch.tensor([1.0, 0.0, 1.0]).expand(int(holes.sum()), 3)))
+        # The mask still reports the holes whatever colour they are painted.
+        plain = self.run_node(source, geometry(torch.tensor([2.0])), 6, path)["result"][2]
+        self.assertTrue(torch.equal(mask, plain))
 
     def test_the_source_holds_once_the_clip_runs_out(self):
         source = torch.zeros(2, HEIGHT, WIDTH, 3)

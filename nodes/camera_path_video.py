@@ -86,6 +86,12 @@ class CameraPathVideo(io.ComfyNode):
                             "the scene with the geometry, so a downstream model can read the "
                             "parallax from them. The editor shows them while this is on.",
                 ),
+                io.Color.Input(
+                    "background", default="#000000",
+                    tooltip="Colour of the pixels no point reached -- the holes video_mask "
+                            "marks. Match whatever your downstream model was trained on; "
+                            "CrossViewWarp-style warp videos use magenta, #ff00ff.",
+                ),
                 io.Boolean.Input(
                     "prune_depth_edges", default=True,
                     tooltip="Remove depth-edge streaks, trading them for holes in video_mask. "
@@ -129,9 +135,10 @@ class CameraPathVideo(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, source, moge_geometry, frame_count, fps, markers, prune_depth_edges, preview_quality, keyframes,
-                camera_path=None) -> io.NodeOutput:
+    def execute(cls, source, moge_geometry, frame_count, fps, markers, background, prune_depth_edges,
+                preview_quality, keyframes, camera_path=None) -> io.NodeOutput:
         path = trajectory.parse_path(keyframes)
+        fill = render.hex_color(background)
         # fps is the editor's timeline rate only: the output is a plain image batch and
         # carries no rate, so nothing here reads it.
         count = max(1, int(frame_count))
@@ -171,7 +178,7 @@ class CameraPathVideo(io.ComfyNode):
                 if lattice is not None:
                     cloud = cloud.joined(lattice)
             c2w = render.pose_matrix(poses[index], unit)
-            rgb, hole = cloud.render(c2w, lens, (width, height), SPLAT)
+            rgb, hole = cloud.render(c2w, lens, (width, height), SPLAT, fill)
             video[index] = rgb.cpu()
             holes[index] = hole.float().cpu()
             progress.update_absolute(index + 1)
