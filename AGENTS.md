@@ -285,8 +285,27 @@ GPU, 140 ms on CPU. Holes (pixels no point reached) come back black and are repo
 ### Marker lattice
 
 `render.marker_lattice(unit)` is a grid of small spheres — 24 points each on a Fibonacci
-spiral — laid out in units of the automatic pivot depth (`LATTICE_SPACING`, `LATTICE_EXTENT`,
-`LATTICE_RADIUS`, `LATTICE_POINTS`). Each sphere is coloured by where it sits (x → red,
+spiral — laid out in units of the automatic pivot depth (`LATTICE_SPACING`,
+`LATTICE_CENTRE`, `LATTICE_HALF`, `LATTICE_ANCHOR`, `LATTICE_RADIUS`, `LATTICE_POINTS`).
+
+- **Staggered.** The grid is a **3D checkerboard**: counting whole steps from the anchor,
+  spheres whose steps sum to an odd number move half a spacing along +x, +y and +z. Every
+  axis line holds every other sphere and the moved half fills the lines between, so the
+  density is a plain grid's — one sphere per cubic spacing — but nothing stacks behind
+  anything along an axis, the source camera's line of sight included. It is a diamond
+  lattice.
+- **Anchored.** `LATTICE_ANCHOR` is `(0, 0, 0.5)`, the sphere dead ahead of the source
+  camera, and it never moves. The stagger is counted from it rather than from a box corner
+  so that resizing the box cannot flip which half moves; with the other half, the view axis
+  first meets a sphere at depth 1.5 and `test_the_lattice_is_occluded_by_nearer_geometry`
+  finds nothing in front of its wall.
+- **Centred on the pivot plane.** The box is `LATTICE_CENTRE ± LATTICE_HALF`,
+  `(0, 0, 1) ± 3`, and every sphere landing inside it is kept: 273 of them. It used to sit
+  entirely in front of the source camera, so a camera orbited round to face it saw almost
+  nothing; now it is as deep behind the pivot as in front and as wide as it is deep. Raising
+  the half-width raises the count, never the density. The tint spans the box.
+
+Each sphere is coloured by where it sits (x → red,
 y → green, z → blue) so it keeps one colour through a move, with a light Lambert shade so it
 reads as a sphere. `geometry.markerLattice` is the mirror; `test_lattice_matches` compares
 the points at float32 precision and the colours to within one level.
@@ -377,6 +396,11 @@ with fewer distinct frames than the floor is cached whole, which is why a still 
 always been exact. A clip past the ceiling — over 20 s at 30 fps — goes back to being
 coarser than the render, and that is the one case where the preview understates the
 frame-to-frame jitter of MoGe's per-frame reconstructions.
+
+`createPreview` builds every sample's cloud up front: roughly 8 MB each in the tab, so
+about 1 GB at the ceiling. The maintainer measured 60 samples as costing nothing
+noticeable. Building each cloud on first visit was discussed and deliberately deferred; it
+is the move to make if a long clip ever makes the editor sluggish.
 
 Each sample is an RGB PNG plus a depth PNG with 16-bit depth packed big-endian into R and G, and
 `B = 255` marking invalid, `B = 127` marking a valid but pruned point, and `B = 0` kept.

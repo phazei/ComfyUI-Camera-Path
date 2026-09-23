@@ -303,12 +303,60 @@ class Lattice(unittest.TestCase):
         self.assertTrue(np.array_equal(colors, again))
         self.assertEqual(one.shape[0] % render.LATTICE_POINTS, 0)
         self.assertTrue(np.all((colors >= 0.0) & (colors <= 1.0)))
-        # Each sphere sits on a grid cell, every one of its points at the radius from it.
+        # Each sphere sits on a half-spacing step from the anchor, every one of its points
+        # at the radius from it.
         spheres = one.reshape(-1, render.LATTICE_POINTS, 3)
-        low = np.array([low for low, _ in render.LATTICE_EXTENT])
-        centres = low + np.round((spheres.mean(axis=1) - low) / render.LATTICE_SPACING) * render.LATTICE_SPACING
+        steps, centres = self.steps(spheres)
         self.assertTrue(np.allclose(np.linalg.norm(spheres - centres[:, None], axis=-1), render.LATTICE_RADIUS, atol=1e-9))
-        self.assertEqual(len({tuple(np.round(c, 6)) for c in centres}), spheres.shape[0])
+        self.assertEqual(len({tuple(s) for s in steps}), spheres.shape[0])
+
+    @staticmethod
+    def steps(spheres):
+        """Each sphere's centre in half-spacing steps from the anchor, and the centre."""
+        half = 0.5 * render.LATTICE_SPACING
+        anchor = np.array(render.LATTICE_ANCHOR)
+        steps = np.round((spheres.mean(axis=1) - anchor) / half).astype(int)
+        return steps, anchor + steps * half
+
+    def test_the_box_is_centred_on_the_pivot_plane(self):
+        _, centres = self.steps(render.marker_lattice(1.0)[0].reshape(-1, render.LATTICE_POINTS, 3))
+        low = np.array(render.LATTICE_CENTRE) - render.LATTICE_HALF
+        high = np.array(render.LATTICE_CENTRE) + render.LATTICE_HALF
+        self.assertEqual(render.LATTICE_CENTRE, (0.0, 0.0, 1.0))
+        # Filled to within half a step of every face, and nothing outside.
+        half = 0.5 * render.LATTICE_SPACING
+        self.assertTrue(np.all(centres.min(axis=0) >= low - 1e-9))
+        self.assertTrue(np.all(centres.min(axis=0) <= low + half + 1e-9))
+        self.assertTrue(np.all(centres.max(axis=0) <= high + 1e-9))
+        self.assertTrue(np.all(centres.max(axis=0) >= high - half - 1e-9))
+        # So a camera looking back at the source sees markers behind it too.
+        self.assertTrue(np.any(centres[:, 2] < 0))
+
+    def test_every_other_sphere_is_staggered_half_a_step_right_down_and_back(self):
+        spheres = render.marker_lattice(1.0)[0].reshape(-1, render.LATTICE_POINTS, 3)
+        steps, centres = self.steps(spheres)
+        # A sphere is either on the anchor's grid on every axis or off it on every axis.
+        odd = steps % 2
+        self.assertTrue(np.all(odd == odd[:, :1]))
+        # On the grid, whole steps sum even; off it, the step it was moved from sums odd.
+        whole = np.where(odd == 1, (steps - 1) // 2, steps // 2).sum(axis=1)
+        self.assertTrue(np.all(whole % 2 == odd[:, 0]))
+        # The sphere dead ahead of the source camera is the anchor and stays put.
+        self.assertIn((0, 0, 0), {tuple(s) for s in steps})
+        # Same density as the plain grid it replaced: one sphere per cubic spacing. The
+        # pattern repeats every two spacings, so a half-open cube of four holds 64.
+        centre = np.array(render.LATTICE_CENTRE)
+        inside = np.all((centres >= centre - 2 * render.LATTICE_SPACING - 1e-9)
+                        & (centres < centre + 2 * render.LATTICE_SPACING - 1e-9), axis=1)
+        self.assertEqual(int(inside.sum()), 64)
+        # Along any axis line, neighbours are two spacings apart, never one.
+        for axis in range(3):
+            others = [a for a in range(3) if a != axis]
+            lines = {}
+            for s in steps:
+                lines.setdefault(tuple(s[others]), []).append(s[axis])
+            for line in lines.values():
+                self.assertTrue(np.all(np.diff(sorted(line)) == 4))
 
     def test_the_lattice_is_occluded_by_nearer_geometry(self):
         wall, _ = Rendering.cloud(Rendering(), torch.full((HEIGHT, WIDTH), 2.0), colors=torch.zeros(HEIGHT, WIDTH, 3))

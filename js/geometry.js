@@ -265,9 +265,15 @@ export function concatClouds(...clouds) {
 
 // ── Marker lattice ─────────────────────────────────────────────────────────
 
-/** Lattice layout in units of pivot depth; identical to render.LATTICE_*. */
+/**
+ * Lattice layout in units of pivot depth; identical to render.LATTICE_*. A box
+ * centred on the pivot plane, filled with spheres stepped from a fixed anchor dead
+ * ahead of the source camera, so resizing the box never changes which half moves.
+ */
 const LATTICE_SPACING = 1.0;
-const LATTICE_EXTENT = [[-2.0, 2.0], [-1.0, 1.0], [0.5, 3.5]];
+const LATTICE_CENTRE = [0.0, 0.0, 1.0];
+const LATTICE_HALF = [3.0, 3.0, 3.0];
+const LATTICE_ANCHOR = [0.0, 0.0, 0.5];
 const LATTICE_RADIUS = 0.015;
 const LATTICE_POINTS = 24;
 const GOLDEN = Math.PI * (3 - Math.sqrt(5));
@@ -275,14 +281,32 @@ const LATTICE_LIGHT = [-0.45, -0.7, -0.55];
 
 /**
  * The marker lattice as a cloud, mirroring `render.marker_lattice` point for point:
- * small spheres on a regular grid, each coloured by where it sits so it keeps one
- * colour through a move. `tests/test_parity.py` compares the two.
+ * small spheres on a 3D checkerboard -- counting whole steps from the anchor, every
+ * sphere whose steps sum to an odd number moved half a spacing right, down and back,
+ * so no axis line holds more than every other sphere -- kept where it lands inside
+ * the box, and coloured by where it sits so it keeps one colour through a move.
+ * `tests/test_parity.py` compares the two.
  * @param {number} unit Automatic pivot depth.
  * @returns {object} Cloud in world units.
  */
 export function markerLattice(unit) {
-  const counts = LATTICE_EXTENT.map(([low, high]) => Math.round((high - low) / LATTICE_SPACING) + 1);
-  const spans = LATTICE_EXTENT.map(([low, high]) => high - low);
+  const low = LATTICE_CENTRE.map((c, a) => c - LATTICE_HALF[a]);
+  const high = LATTICE_CENTRE.map((c, a) => c + LATTICE_HALF[a]);
+  // Whole steps from the anchor that could reach the box; the box test below trims.
+  const first = low.map((value, a) => Math.floor((value - LATTICE_ANCHOR[a]) / LATTICE_SPACING) - 1);
+  const last = high.map((value, a) => Math.ceil((value - LATTICE_ANCHOR[a]) / LATTICE_SPACING) + 1);
+  const centres = [];
+  for (let kz = first[2]; kz < last[2]; kz++) {
+    for (let jy = first[1]; jy < last[1]; jy++) {
+      for (let ix = first[0]; ix < last[0]; ix++) {
+        const cell = [ix, jy, kz];
+        // Math.abs: steps can be negative, and JS `%` keeps the sign.
+        const shift = 0.5 * Math.abs((ix + jy + kz) % 2);
+        const centre = cell.map((step, a) => LATTICE_ANCHOR[a] + (step + shift) * LATTICE_SPACING);
+        if (centre.every((value, a) => value >= low[a] - 1e-9 && value <= high[a] + 1e-9)) centres.push(centre);
+      }
+    }
+  }
   const surface = [], lit = [];
   for (let i = 0; i < LATTICE_POINTS; i++) {
     const y = 1 - 2 * (i + 0.5) / LATTICE_POINTS;
@@ -291,22 +315,16 @@ export function markerLattice(unit) {
     surface.push(n);
     lit.push(0.7 + 0.3 * Math.max(0, dot(n, LATTICE_LIGHT)));
   }
-  const cloud = emptyCloud(counts[0] * counts[1] * counts[2] * LATTICE_POINTS);
+  const cloud = emptyCloud(centres.length * LATTICE_POINTS);
   let k = 0;
-  for (let kz = 0; kz < counts[2]; kz++) {
-    for (let jy = 0; jy < counts[1]; jy++) {
-      for (let ix = 0; ix < counts[0]; ix++) {
-        const cell = [ix, jy, kz];
-        const centre = cell.map((step, a) => LATTICE_EXTENT[a][0] + step * LATTICE_SPACING);
-        const tint = centre.map((value, a) => 0.35 + 0.6 * (value - LATTICE_EXTENT[a][0]) / spans[a]);
-        for (let i = 0; i < LATTICE_POINTS; i++, k++) {
-          cloud.x[k] = (centre[0] + surface[i][0] * LATTICE_RADIUS) * unit;
-          cloud.y[k] = (centre[1] + surface[i][1] * LATTICE_RADIUS) * unit;
-          cloud.z[k] = (centre[2] + surface[i][2] * LATTICE_RADIUS) * unit;
-          for (let c = 0; c < 3; c++) {
-            cloud.color[k * 3 + c] = Math.round(Math.min(1, tint[c] * lit[i]) * 255);
-          }
-        }
+  for (const centre of centres) {
+    const tint = centre.map((value, a) => 0.35 + 0.6 * (value - low[a]) / (high[a] - low[a]));
+    for (let i = 0; i < LATTICE_POINTS; i++, k++) {
+      cloud.x[k] = (centre[0] + surface[i][0] * LATTICE_RADIUS) * unit;
+      cloud.y[k] = (centre[1] + surface[i][1] * LATTICE_RADIUS) * unit;
+      cloud.z[k] = (centre[2] + surface[i][2] * LATTICE_RADIUS) * unit;
+      for (let c = 0; c < 3; c++) {
+        cloud.color[k * 3 + c] = Math.round(Math.min(1, tint[c] * lit[i]) * 255);
       }
     }
   }

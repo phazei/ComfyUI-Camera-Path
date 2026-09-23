@@ -199,11 +199,21 @@ def estimate_focal(points: torch.Tensor, valid: torch.Tensor, width: int, height
     return focal[0], focal[1]
 
 
-#: The marker lattice, in units of the automatic pivot depth. Spacing between sphere
-#: centres, the extent covered on each axis, the radius of a sphere and the number of
-#: points on its surface. js/geometry.js repeats these; test_parity checks the result.
+#: The marker lattice, in units of the automatic pivot depth. Spacing between grid
+#: steps; the box it fills, as a centre and a half-width per axis; the anchor sphere
+#: the stagger is counted from; the radius of a sphere and the number of points on its
+#: surface. js/geometry.js repeats these; test_parity checks the result.
+#:
+#: The box is centred on the pivot plane -- the automatic pivot sits at (0, 0, 1) --
+#: and is as deep as it is wide, so a camera that orbits all the way round finds as
+#: many markers looking back at the source as looking out from it. The anchor is the
+#: sphere dead ahead of the source camera, half a unit out; counting the stagger from a
+#: fixed sphere rather than from the box corner means resizing the box never changes
+#: which half moves.
 LATTICE_SPACING = 1.0
-LATTICE_EXTENT = ((-2.0, 2.0), (-1.0, 1.0), (0.5, 3.5))
+LATTICE_CENTRE = (0.0, 0.0, 1.0)
+LATTICE_HALF = (3.0, 3.0, 3.0)
+LATTICE_ANCHOR = (0.0, 0.0, 0.5)
 LATTICE_RADIUS = 0.015
 LATTICE_POINTS = 24
 
@@ -215,19 +225,32 @@ LATTICE_LIGHT = (-0.45, -0.7, -0.55)
 
 
 def marker_lattice(unit: float) -> tuple[np.ndarray, np.ndarray]:
-    """Small spheres on a regular grid through the scene, as points to splat.
+    """Small spheres on a staggered grid through the scene, as points to splat.
 
     They share the geometry's space, so the z-buffer occludes them behind the
     subject and perspective shrinks them with distance -- exactly the parallax cues
-    a downstream video model can use. Each sphere is coloured by where it is
+    a downstream video model can use.
+
+    The grid is a 3D checkerboard: counting whole steps from ``LATTICE_ANCHOR``,
+    every sphere whose steps sum to an odd number is moved half a spacing along
+    +x, +y and +z, and every sphere that lands inside the box is kept. The
+    density is the same as a plain grid's -- one sphere per cubic spacing -- but no axis line
+    carries more than every other sphere, and the moved half fills the lines between
+    them, so spheres do not stack behind one another along any axis -- least of all
+    the source camera's view direction. It is a diamond lattice: every sphere has
+    four nearest neighbours, evenly spread. Each sphere is coloured by where it is
     (x -> red, y -> green, z -> blue) so a marker keeps one colour throughout a
     move and its travel across the frame is readable.
 
     Returns ``(points, colors)``: float64 ``[N, 3]`` in world units and ``[N, 3]``
     in 0..1. Deterministic, so the JavaScript mirror produces the same points.
     """
-    counts = [int(round((high - low) / LATTICE_SPACING)) + 1 for low, high in LATTICE_EXTENT]
-    spans = [high - low for low, high in LATTICE_EXTENT]
+    low = [c - h for c, h in zip(LATTICE_CENTRE, LATTICE_HALF)]
+    high = [c + h for c, h in zip(LATTICE_CENTRE, LATTICE_HALF)]
+    # Whole steps from the anchor that could reach the box; the box test below trims.
+    steps = [range(math.floor((low[a] - LATTICE_ANCHOR[a]) / LATTICE_SPACING) - 1,
+                   math.ceil((high[a] - LATTICE_ANCHOR[a]) / LATTICE_SPACING) + 1)
+             for a in range(3)]
     surface = np.empty((LATTICE_POINTS, 3))
     for i in range(LATTICE_POINTS):
         y = 1.0 - 2.0 * (i + 0.5) / LATTICE_POINTS
@@ -237,12 +260,16 @@ def marker_lattice(unit: float) -> tuple[np.ndarray, np.ndarray]:
     lit = 0.7 + 0.3 * np.clip(surface @ np.array(LATTICE_LIGHT), 0.0, None)
 
     points, colors = [], []
-    for k in range(counts[2]):
-        for j in range(counts[1]):
-            for i in range(counts[0]):
+    for k in steps[2]:
+        for j in steps[1]:
+            for i in steps[0]:
                 cell = (i, j, k)
-                centre = np.array([LATTICE_EXTENT[a][0] + cell[a] * LATTICE_SPACING for a in range(3)])
-                tint = np.array([0.35 + 0.6 * (centre[a] - LATTICE_EXTENT[a][0]) / spans[a] for a in range(3)])
+                shift = 0.5 * ((i + j + k) % 2)
+                centre = np.array([LATTICE_ANCHOR[a] + (cell[a] + shift) * LATTICE_SPACING
+                                   for a in range(3)])
+                if not all(low[a] - 1e-9 <= centre[a] <= high[a] + 1e-9 for a in range(3)):
+                    continue
+                tint = np.array([0.35 + 0.6 * (centre[a] - low[a]) / (high[a] - low[a]) for a in range(3)])
                 points.append((centre + surface * LATTICE_RADIUS) * unit)
                 colors.append(tint * lit[:, None])
     return np.concatenate(points), np.clip(np.concatenate(colors), 0.0, 1.0)
