@@ -74,7 +74,23 @@ globalThis.window = window;
 let confirmAnswer = true;
 globalThis.confirm = () => confirmAnswer;
 
-const { createCameraEditor, spreadMarkers } = await import(new URL('../js/editor.js', import.meta.url));
+const { createCameraEditor, spreadMarkers, timelineTicks } = await import(new URL('../js/editor.js', import.meta.url));
+
+// The ruler labels a nice frame step that fits, and ticks frames only when there is room.
+{
+  const wide = timelineTicks(119, 1960);
+  if (wide.step !== 5 || !wide.frames || wide.labels[1] !== 5 || wide.labels.at(-1) !== 115) {
+    throw Error(`wide ruler: ${JSON.stringify(wide)}`);
+  }
+  const narrow = timelineTicks(119, 400);
+  if (narrow.step !== 20 || narrow.frames) throw Error(`narrow ruler: ${JSON.stringify(narrow)}`);
+  const long = timelineTicks(2000, 600);
+  if (long.step !== 200 || long.frames) throw Error(`long ruler: ${JSON.stringify(long)}`);
+  if (timelineTicks(119, 0).labels.length || timelineTicks(0, 500).frames) throw Error('degenerate ruler');
+  // Quarter points land on the nearest tick that is drawn anyway.
+  if (wide.quarters.join() !== '30,60,89') throw Error(`frame quarters: ${wide.quarters}`);
+  if (narrow.quarters.join() !== '20,60,80') throw Error(`label quarters: ${narrow.quarters}`);
+}
 const { cameraScenePosition, poseCamera, dragOrbit, dragTruck, uprightRotation, renderScene } = await import(new URL('../js/geometry.js', import.meta.url));
 
 // Scene splats grow without giving up clipping or depth occlusion.
@@ -543,11 +559,13 @@ check('reset key clears dolly', path()[0].dolly === 0 && dollyNumber.value === '
 
 editor.loadPath([{ frame: 0 }, { frame: 48, azimuth: 30 }]);
 confirmAnswer = false;
-click('reset');
-check('reset path is abandoned when the confirmation is declined', path().length === 2);
+click('clear');
+check('clear path is abandoned when the confirmation is declined', path().length === 2);
 confirmAnswer = true;
-click('reset');
-check('reset leaves one keyframe on the source camera', path().length === 1 && path()[0].distance === 1);
+click('clear');
+check('clear leaves one keyframe on the source camera', path().length === 1 && path()[0].distance === 1);
+const useInput = () => element.querySelector('[data-action=use-input]');
+check('use input is hidden with nothing connected', useInput().hidden);
 
 // camera_path seeds the editor; it must never quietly replace authored keyframes.
 editor.setInputPath([{ frame: 0, azimuth: 12 }, { frame: 20, azimuth: 40 }]);
@@ -555,14 +573,16 @@ check('an unauthored editor adopts the connected path on its own',
       path().length === 2 && path()[0].azimuth === 12);
 editor.setInputPath([{ frame: 0, azimuth: 99 }]);
 check('a connected path never overwrites an authored one', path()[0].azimuth === 12);
-check('the reset button offers the connected path instead',
-      element.querySelector('[data-action=reset]').textContent === 'Reset to input');
-click('reset');
-check('reset adopts the connected path on request',
+check('use input appears while a path is connected', !useInput().hidden);
+click('use-input');
+check('use input adopts the connected path on request',
       path().length === 1 && path()[0].azimuth === 99);
+editor.loadPath([{ frame: 0 }, { frame: 48, azimuth: 30 }]);
+click('clear');
+check('clear ignores a connected path and goes back to the source camera',
+      path().length === 1 && path()[0].azimuth === 0);
 editor.setInputPath(null);
-check('disconnecting restores the plain reset',
-      element.querySelector('[data-action=reset]').textContent === 'Reset path');
+check('disconnecting hides use input', useInput().hidden);
 
 // Pivots: a second one can be added, selected, positioned, assigned and straightened,
 // and the version 2 format carries all of it.

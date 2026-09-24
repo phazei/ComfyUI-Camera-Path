@@ -213,7 +213,7 @@ class NodeRun(unittest.TestCase):
         # The authored keyframes rendered, so the frames are still the source image.
         self.assertEqual(json.loads(rendered)["camera"][0]["azimuth"], 0.0)
         self.assertTrue(torch.equal(video[0], source[0]))
-        # ...but the seed is handed to the editor so Reset path can offer it.
+        # ...but the seed is handed to the editor so Use input can offer it.
         data = json.loads(output["ui"]["camera_path"][0])
         self.assertEqual(data["input_path"]["camera"], [{"frame": 0, "pivot": "p1", "pivot_target": "p1",
                                                        "pivot_blend": 0, **context.trajectory.DEFAULTS,

@@ -123,6 +123,45 @@ export function spreadMarkers(markers) {
   return spread;
 }
 
+/** Timeline ruler spacing, in layout pixels: frame ticks and labelled ticks. */
+const TICK_MIN_GAP = 6;
+const LABEL_MIN_GAP = 40;
+/** Approximate width of one label digit at the ruler's font size. */
+const LABEL_DIGIT = 6;
+
+/**
+ * Chooses the timeline ruler: labelled ticks on the smallest "nice" frame step
+ * (1, 2, 5, 10, 20, 50, ...) whose labels clear each other, and a tick on every frame
+ * when frames are at least `TICK_MIN_GAP` apart. The step follows the track's width,
+ * so a narrow node or a long clip thins the labels out rather than crowding them.
+ *
+ * The quarter, half and three-quarter points are highlighted on whichever tick already
+ * drawn is nearest -- a frame tick when frames are ticked, else a labelled one -- so
+ * they never add a tick of their own.
+ * @param {number} last Last frame index; the track spans 0..last.
+ * @param {number} width Track width in layout pixels.
+ * @returns {{step: number, labels: number[], frames: boolean, quarters: number[]}}
+ *   Label step, the labelled frames, whether every frame gets a tick, and the frames
+ *   highlighted as quarter points.
+ */
+export function timelineTicks(last, width) {
+  const span = Math.max(1, last), perFrame = width / span;
+  // Unlaid-out (width 0) would otherwise search for a step forever.
+  if (!(perFrame > 0)) return { step: 0, labels: [], frames: false, quarters: [] };
+  const gap = Math.max(LABEL_MIN_GAP, String(last).length * LABEL_DIGIT + 14);
+  let step = 1;
+  for (let scale = 1; step * perFrame < gap; scale *= 10) {
+    step = [1, 2, 5].map(m => m * scale).find(s => s * perFrame >= gap) ?? 10 * scale;
+  }
+  const labels = [];
+  for (let frame = 0; frame <= last; frame += step) labels.push(frame);
+  const frames = last > 0 && perFrame >= TICK_MIN_GAP;
+  const grid = frames ? 1 : step, end = frames ? last : labels.at(-1);
+  const quarters = last > 0 ? [...new Set([0.25, 0.5, 0.75].map(q =>
+    Math.min(end, Math.round(last * q / grid) * grid)))] : [];
+  return { step, labels, frames, quarters };
+}
+
 const STYLE = `
 /* overflow:hidden is load-bearing: the fixed rows plus the two canvas minimums can
    exceed a short widget, and without it the render pane lands on top of the fields. */
@@ -157,6 +196,13 @@ const STYLE = `
 .cpath .key.selected{background:#a77dff}
 .cpath .key.beyond{background:#6a6577}
 .cpath .cursor{position:absolute;top:0;height:26px;width:2px;margin-left:-1px;background:#a77dff;pointer-events:none}
+/* The ruler lives inside the track's existing 26px: ticks hang under the rail, labels
+   sit above it, and the keyframe diamonds are drawn over both. */
+.cpath .ruler{position:absolute;inset:0;pointer-events:none}
+.cpath .ruler .tick{position:absolute;top:16px;width:1px;height:3px;background:#4a4658}
+.cpath .ruler .tick.major{height:6px;background:#6a6577}
+.cpath .ruler .tick.quarter{height:6px;background:#d0a85f}
+.cpath .ruler .frame-label{position:absolute;top:0;transform:translateX(-50%);font:9px/9px ui-monospace,monospace;color:#7d7890}
 .cpath .tools{padding:0 2px}
 .cpath .tools .name{font-size:13px;color:#9a93ad}
 .cpath .fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;flex:0 0 auto}
@@ -240,7 +286,8 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
     <div class="row">
       <button data-action="add">+ Keyframe</button>
       <button data-action="add-pivot" title="Add a point for the camera to orbit around">+ Pivot</button>
-      <button data-action="reset" title="Delete every keyframe and start again from the source camera">Reset path</button>
+      <button data-action="clear" title="Delete every keyframe and pivot and start again from the source camera">Clear path</button>
+      <button data-action="use-input" hidden title="Replace the current path with the one on the camera_path input">Use input</button>
       <span class="spacer"></span>
       <button data-action="zoom-out" title="Zoom out">\u2212</button>
       <button data-action="zoom-in" title="Zoom in">+</button>
@@ -252,7 +299,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
       </div>
       <div class="render"><canvas></canvas><div class="label"></div></div>
     </div>
-    <div class="track"><div class="rail"></div><div class="keys"></div><div class="cursor"></div></div>
+    <div class="track"><div class="rail"></div><div class="ruler"></div><div class="keys"></div><div class="cursor"></div></div>
     <div class="row">
       <button data-action="play">\u25b6</button>
       <span class="count"></span>
@@ -282,6 +329,8 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
   const renderContext = renderCanvas.getContext('2d');
   const track = find('.track');
   const keys = find('.keys');
+  const ruler = find('.ruler');
+  let rulerFor = '';
 
   /**
    * Builds a slider + number pair for one axis.
@@ -624,19 +673,37 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
   }
 
   /**
-   * Discards the current path, for the Reset path button. Falls back to the source
-   * camera when nothing is connected, otherwise reloads the connected path.
+   * Discards the current path, after confirming unless it is already untouched.
+   * @param {object} replacement Normalised path to put in its place.
+   * @param {string} question Confirmation text.
    * @returns {void}
    */
-  function resetPath() {
-    const replacement = inputPath ? normalizePath(inputPath) : defaultPath();
-    const question = inputPath
-      ? 'Replace the current path with the one from the connected camera_path input?'
-      : `Delete all ${path.camera.length} keyframes and start again from the source camera?`;
+  function replacePath(replacement, question) {
     if (!pristine() && globalThis.confirm?.(question) !== true) return;
     path = replacement;
     selectKey(0);
     commit();
+  }
+
+  /**
+   * Clear path: back to one source-camera keyframe on the automatic pivot, whether or
+   * not a camera_path is connected. The result is pristine, so the next run adopts a
+   * connected path again, as it would for a fresh node.
+   * @returns {void}
+   */
+  function clearPath() {
+    replacePath(defaultPath(),
+      `Delete all ${path.camera.length} keyframes and start again from the source camera?`);
+  }
+
+  /**
+   * Use input: loads the path from the connected camera_path input.
+   * @returns {void}
+   */
+  function useInputPath() {
+    if (!inputPath) return;
+    replacePath(normalizePath(inputPath),
+      'Replace the current path with the one from the connected camera_path input?');
   }
 
   /**
@@ -1027,11 +1094,46 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
   // -- Widgets ---------------------------------------------------------------
 
   /**
+   * Rebuilds the timeline ruler (`timelineTicks`) when the frame count or the track
+   * width changed; `refresh` runs on every pointer move, so an unchanged ruler is kept.
+   * @returns {void}
+   */
+  function drawRuler() {
+    const last = lastFrame(), width = track.clientWidth;
+    const key = `${last}:${width}`;
+    if (key === rulerFor) return;
+    rulerFor = key;
+    const { step, labels, frames, quarters } = timelineTicks(last, width);
+    const span = Math.max(1, last), place = frame => `${frame / span * 100}%`;
+    const parts = [];
+    const tick = (frame, major) => {
+      const mark = document.createElement('div');
+      mark.className = 'tick' + (major ? ' major' : '') + (quarters.includes(frame) ? ' quarter' : '');
+      mark.style.left = place(frame);
+      parts.push(mark);
+    };
+    if (frames) for (let frame = 0; frame <= last; frame++) if (frame % step) tick(frame, false);
+    for (const frame of labels) {
+      tick(frame, true);
+      // Labels are centred on their tick; one that would hang past the end of the
+      // track's margin is left out rather than clipped.
+      if (frame / span * width + String(frame).length * LABEL_DIGIT / 2 > width + 8) continue;
+      const label = document.createElement('div');
+      label.className = 'frame-label';
+      label.style.left = place(frame);
+      label.textContent = String(frame);
+      parts.push(label);
+    }
+    ruler.replaceChildren(...parts);
+  }
+
+  /**
    * Rebuilds every widget from state and redraws both canvases. Cheap enough to call
    * on each pointer move.
    * @returns {void}
    */
   function refresh() {
+    drawRuler();
     selected = clamp(selected, -1, path.camera.length - 1);
     selectedPivot = selectedPivot < 0 ? -1 : clamp(selectedPivot, 0, path.pivots.length - 1);
     playhead = clamp(playhead, 0, lastFrame());
@@ -1052,11 +1154,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
     find('[data-role=selection]').textContent = selectedPivot >= 0
       ? `pivot ${selectedPivot + 1} of ${path.pivots.length}`
       : selected < 0 ? 'No camera selected' : `keyframe ${selected + 1} of ${path.camera.length} \u00b7 frame ${key().frame}`;
-    const reset = find('[data-action=reset]');
-    reset.textContent = inputPath ? 'Reset to input' : 'Reset path';
-    reset.title = inputPath
-      ? 'Replace the current path with the one on the camera_path input'
-      : 'Delete every keyframe and start again from the source camera';
+    find('[data-action=use-input]').hidden = !inputPath;
     find('[data-action=remove]').disabled = selected < 0 || path.camera.length <= 1;
     find('[data-action=add]').disabled = path.camera.length >= MAX_KEYS
       || path.camera.some(item => item.frame === Math.round(playhead));
@@ -1402,7 +1500,8 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
         pivot_target: key().pivot_target ?? key().pivot, pivot_blend: 0, ...identityPose() };
       commit();
     }
-    if (action === 'reset') resetPath();
+    if (action === 'clear') clearPath();
+    if (action === 'use-input') useInputPath();
     if (action === 'zoom-in' || action === 'zoom-out') {
       zoom = clamp(zoom * (action === 'zoom-in' ? 1.25 : 0.8), 0.3, 20);
     }
@@ -1465,7 +1564,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
    * Records the path that arrived on the camera_path socket on the last run.
    *
    * It is a seed, not an override: it is only adopted outright when nothing has been
-   * authored yet. Otherwise it waits behind Reset path, so a run cannot wipe out the
+   * authored yet. Otherwise it waits behind Use input, so a run cannot wipe out the
    * user's edits.
    * @param {object|object[]|null} data Path from the node, or null when unconnected.
    * @returns {void}
@@ -1525,6 +1624,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
 
   const observer = new ResizeObserver(() => {
     applyLayout();
+    drawRuler();
     drawScene();
     drawRender();
   });

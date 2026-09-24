@@ -135,7 +135,9 @@ standalone. Everything that touches ComfyUI lives in `nodes/` and `__init__.py`.
 to, hidden from the node body by `js/camera-path.js`, and it is what actually renders.
 `camera_path` is `force_input=True` — a connection dot with no box — and is a **seed, not an
 override**: the node hands it back untouched in the UI payload, the editor adopts it only if
-nothing has been authored yet, and otherwise it waits behind the Reset path button. A
+nothing has been authored yet, and otherwise it waits behind the Use input button, shown
+only while an input is connected. Clear path always returns to the source camera; that
+result is pristine, so the next run re-adopts a connected input. A
 connected input that silently replaced the widget would destroy the user's edits on every
 run, which is exactly what the old single-input design did.
 - UI output: `{"camera_path": [json]}` carrying `{path, frame_count, markers, input_path, preview}`.
@@ -533,6 +535,16 @@ minimum, so a claim equal to the current height makes the minimum equal the curr
 `chromeHeight` is an empirical over-estimate on purpose. Under-estimate it and the widget
 asks for more than the node has, the node grows to fit, and the next pass asks for more
 again. Its row constants are tuned against the rendered node, not LiteGraph's nominal ones.
+
+### The timeline ruler is in frames, not seconds
+
+`editor.timelineTicks` labels frame numbers on the smallest step of 1, 2, 5, 10, 20, 50, …
+whose labels clear 40px, and ticks every frame once frames are 6px apart. The quarter,
+half and three-quarter points turn the nearest already-drawn tick gold; they never add one.
+Labels are centred on their tick. Frames, because
+the play button's readout already converts to seconds; no snapping, by choice. The ruler
+fits inside the track's existing 26px and is rebuilt only when the frame count or the
+track width changes.
 
 ### Timeline markers are rebuilt on every redraw
 `refresh()` replaces the `.key` elements, so a marker being dragged is detached mid-drag.

@@ -114,7 +114,7 @@ class CameraPathVideo(io.ComfyNode):
                 io.String.Input(
                     "camera_path",
                     optional=True, force_input=True,
-                    tooltip="Optional path from another node. Press Reset path in the editor "
+                    tooltip="Optional path from another node. Press Use input in the editor "
                             "to load it; it never silently replaces what you have authored.",
                 ),
             ],

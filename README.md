@@ -43,9 +43,11 @@ MoGe geometry comes from the native nodes in `image/geometry estimation`:
 | `camera_path` | `STRING` | Optional, connection only. A path from another node. |
 
 `camera_path` **seeds** the editor, it does not override it. If you have not authored
-anything yet the editor adopts the connected path on the next run; otherwise the
-button becomes **Reset to input** and the path is only loaded when you ask. Running
-the workflow can never overwrite keyframes you have placed.
+anything yet the editor adopts the connected path on the next run; otherwise a
+**Use input** button appears and the path is only loaded when you ask. Running
+the workflow can never overwrite keyframes you have placed. **Clear path** always goes
+back to the source camera, connected input or not. A cleared path counts as nothing
+authored, though, so the next run adopts the connected path again.
 
 Frame `i` of the output uses source frame `i` and its geometry. Once the source
 runs out, its last frame and last geometry frame are reused, so one still image
@@ -199,7 +201,7 @@ The node carries a 3D editor:
 Drag the node taller and the two views grow with it; make it wide and they sit side
 by side. **Reset key** resets the selected camera relative to its pivot,
 **Snap to auto** puts a pivot back on the subject the
-node found, and **Reset path** clears everything after confirming.
+node found, and **Clear path** clears everything after confirming.
 
 Deleting a camera clears its selection without seeking to another key or recentering
 the overview. The shot at the current time may still change because the path changed.
