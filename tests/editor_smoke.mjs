@@ -443,6 +443,26 @@ slider.value = '35';
 slider.dispatchEvent(new window.Event('input', { bubbles: true }));
 check('a slider edits the selected keyframe', path().some(key => key.elevation === 35));
 
+// A focused number box keeps what is being typed, but follows a change of camera.
+{
+  const elevationNumber = [...element.querySelectorAll('.field')]
+    .find(field => field.textContent.startsWith('Elevation')).querySelector('input[type=number]');
+  const edited = path().findIndex(key => key.elevation === 35);
+  elevationNumber.focus();
+  // Typed but not yet an input event: a refresh must leave it be.
+  elevationNumber.value = '17';
+  editor.sync();
+  check('a focused number box is not rewritten while typing', elevationNumber.value === '17');
+  pointer(element.querySelectorAll('.key')[1 - edited], 'pointerdown', trackX(1 - edited));
+  pointer(track, 'pointerup', trackX(1 - edited));
+  check('a focused number box shows the newly selected camera',
+        window.document.activeElement === elevationNumber
+        && elevationNumber.value === String(path()[1 - edited].elevation));
+  elevationNumber.blur();
+  pointer(element.querySelectorAll('.key')[edited], 'pointerdown', trackX(edited));
+  pointer(track, 'pointerup', trackX(edited));
+}
+
 dragScene([8, 8], [48, 38]);
 check('dragging the background only turns the view', path().length === 2);
 

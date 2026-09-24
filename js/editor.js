@@ -331,6 +331,8 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
   const keys = find('.keys');
   const ruler = find('.ruler');
   let rulerFor = '';
+  /** The keyframe or pivot key the panel showed at the last refresh. */
+  let shownItem = null;
 
   /**
    * Builds a slider + number pair for one axis.
@@ -1165,9 +1167,16 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
       panel.hidden = (panel.dataset.panel === 'pivot') !== showPivot;
       if (!showPivot && selected < 0) panel.hidden = true;
     }
+    // A focused box is left alone so a refresh cannot rewrite what is being typed, but
+    // only while it still shows the same keyframe or pivot; after a selection change it
+    // must show the new one's value.
+    const showing = showPivot ? pivotKey(path.pivots[selectedPivot]) : key();
+    const same = showing === shownItem;
+    shownItem = showing;
     const sync = (field, value) => {
-      if (field.slider && document.activeElement !== field.slider) field.slider.value = String(value);
-      if (document.activeElement !== field.number) field.number.value = String(Math.round(value * 1e4) / 1e4);
+      const held = element => same && document.activeElement === element;
+      if (field.slider && !held(field.slider)) field.slider.value = String(value);
+      if (!held(field.number)) field.number.value = String(Math.round(value * 1e4) / 1e4);
     };
     if (showPivot) {
       const pivot = path.pivots[selectedPivot];
