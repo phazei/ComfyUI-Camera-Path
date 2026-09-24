@@ -66,7 +66,9 @@ const NOTICE_MS = 10000;
 
 /** Scene marker radii, in layout pixels: [unselected, selected]. */
 const KEY_RADIUS = [9, 11];
-const PIVOT_RADIUS = [7, 9];
+/** A pivot's disc never changes; selecting one draws a ring this far outside it. */
+const PIVOT_RADIUS = 7;
+const PIVOT_RING = 4;
 
 /** Clear space kept between two markers, and how far one may be pushed to get it. */
 const MARKER_GAP = 3;
@@ -943,7 +945,7 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
     const placed = spreadMarkers([
       ...path.pivots.map((pivot, index) => ({
         kind: 'pivot', index, point: view.project(pivotScene(pivot, playhead)),
-        radius: PIVOT_RADIUS[index === selectedPivot ? 1 : 0],
+        radius: PIVOT_RADIUS,
       })),
       ...path.camera.map((item, index) => ({
         kind: 'key', index, point: view.project(cameraScenePosition(poseAt(path, item.frame), unit())),
@@ -969,7 +971,14 @@ export function createCameraEditor({ readPath, writePath, readFrameCount, readMa
       line(foot, [foot[0] + up[0] * 0.225, foot[1] - up[1] * 0.225, foot[2] - up[2] * 0.225], '#d0a85f88', 1);
       line(foot, [foot[0] + own[0][2] * 0.225, foot[1] - own[1][2] * 0.225,
                   foot[2] - own[2][2] * 0.225], '#d0a85f', 1);
-      disc(at, radius, index === selectedPivot ? '#a77dff' : '#d0a85f', '#12121a');
+      disc(at, radius, '#d0a85f', '#12121a');
+      if (index === selectedPivot) {
+        sceneContext.beginPath();
+        sceneContext.arc(at[0], at[1], radius + PIVOT_RING, 0, Math.PI * 2);
+        sceneContext.strokeStyle = '#d0a85f';
+        sceneContext.lineWidth = 2;
+        sceneContext.stroke();
+      }
       // Above the disc, not in it, so a pivot is never mistaken for a keyframe.
       if (path.pivots.length > 1) tag(String(index + 1), [at[0], at[1] - radius - 8], '#d0a85f');
     });
