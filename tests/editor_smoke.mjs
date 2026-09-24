@@ -85,9 +85,15 @@ const { cameraScenePosition, poseCamera, dragOrbit, dragTruck, uprightRotation, 
   target.depth.fill(Infinity);
   renderScene(cloud, view, target, 1, 1, 2);
   if (target.data.filter((v, i) => i % 4 === 3 && v).length !== 13) throw Error('scene splat footprint');
+  // The default view looks from the source camera's side, so the point nearer the
+  // source (smaller z) is nearer the observer and must cover the farther one, in
+  // either drawing order.
   cloud.z = [0.5]; cloud.color = [0, 255, 0];
   renderScene(cloud, view, target, 1, 1, 2);
-  if (target.data[(4 * 9 + 4) * 4] !== 255) throw Error('scene splat occlusion');
+  if (target.data[(4 * 9 + 4) * 4 + 1] !== 255) throw Error('scene splat occlusion: nearer point hidden');
+  cloud.z = [1.5]; cloud.color = [0, 0, 255];
+  renderScene(cloud, view, target, 1, 1, 2);
+  if (target.data[(4 * 9 + 4) * 4 + 1] !== 255) throw Error('scene splat occlusion: farther point drawn over');
   view.originX = -1;
   renderScene(cloud, view, target, 1, 1, 2);
 }

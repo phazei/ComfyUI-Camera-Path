@@ -459,7 +459,9 @@ export function renderScene(cloud, view, target, pivotZ, stride, radius = 0) {
     ey -= oy;
     ez -= oz;
     const rx = ex * cy - ez * sy, rz = ex * sy + ez * cy;
-    const d = ey * sp + rz * cp;
+    // Distance away from the observer: the screen's depth axis points at them, so
+    // the nearest point is the most negative and wins the z-test.
+    const d = -(ey * sp + rz * cp);
     const px = (originX + rx * scale) | 0, py = (originY - (ey * cp - rz * sp) * scale) | 0;
     for (let dy = -radius; dy <= radius; dy++) for (let dx = -radius; dx <= radius; dx++) {
       if (dx * dx + dy * dy > radius * radius) continue;
